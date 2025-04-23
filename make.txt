@@ -1,0 +1,435 @@
+In file included from test/../include/future/all.hh:5,
+                 from test/future_promise_test.cc:2:
+test/../include/future/future.hh:23:43: error: ‘future’ was not declared in this scope; did you mean ‘futurize’?
+   23 | template <typename... T> struct is_future<future<T...>> : std::true_type {};
+      |                                           ^~~~~~
+      |                                           futurize
+test/../include/future/future.hh:23:51: error: expected parameter pack before ‘...’
+   23 | template <typename... T> struct is_future<future<T...>> : std::true_type {};
+      |                                                   ^~~
+test/../include/future/future.hh:23:54: error: template argument 1 is invalid
+   23 | template <typename... T> struct is_future<future<T...>> : std::true_type {};
+      |                                                      ^~
+test/../include/future/future.hh:29:81: error: ‘future’ was not declared in this scope; did you mean ‘futurize’?
+   29 | template <typename Func, typename Result = futurize_t<std::invoke_result_t<Func(future<T...>)>>>
+      |                                                                                 ^~~~~~
+      |                                                                                 futurize
+test/../include/future/future.hh:29:81: error: ‘future’ was not declared in this scope; did you mean ‘futurize’?
+   29 | template <typename Func, typename Result = futurize_t<std::invoke_result_t<Func(future<T...>)>>>
+      |                                                                                 ^~~~~~
+      |                                                                                 futurize
+test/../include/future/future.hh:29:93: error: template argument 1 is invalid
+   29 | template <typename Func, typename Result = futurize_t<std::invoke_result_t<Func(future<T...>)>>>
+      |                                                                                             ^
+test/../include/future/future.hh:29:94: error: template argument 1 is invalid
+   29 | template <typename Func, typename Result = futurize_t<std::invoke_result_t<Func(future<T...>)>>>
+      |                                                                                              ^~
+test/../include/future/future.hh:30:8: error: too many template-parameter-lists
+   30 | Result future<T...>::then_wrapped(Func&& func) noexcept;
+      |        ^~~~~~
+test/../include/future/future.hh:39:11: error: declaration of ‘using future_state = struct future_state<T ...>’ changes meaning of ‘future_state’ [-fpermissive]
+   39 |     using future_state = future_state<T...>;
+      |           ^~~~~~~~~~~~
+In file included from test/../include/future/all.hh:4,
+                 from test/future_promise_test.cc:2:
+test/../include/future/future_state.hh:7:8: note: ‘future_state’ declared here as ‘struct future_state<T ...>’
+    7 | struct future_state {
+      |        ^~~~~~~~~~~~
+In file included from test/../include/future/all.hh:5,
+                 from test/future_promise_test.cc:2:
+test/../include/future/future.hh:185:19: error: expected identifier before ‘requires’
+  185 |     GCC6_CONCEPT( requires seastar::CanApply<Func, T...> )
+      |                   ^~~~~~~~
+test/../include/future/future.hh:185:19: error: expected ‘,’ or ‘...’ before ‘requires’
+test/../include/future/future.hh:186:5: error: expected constructor, destructor, or type conversion before ‘Result’
+  186 |     Result
+      |     ^~~~~~
+test/../include/future/future.hh: In member function ‘void future<T>::schedule(Func&&)’:
+test/../include/future/future.hh:124:15: error: ‘::schedule’ has not been declared
+  124 |             ::schedule(std::make_unique<continuation<Func, T...>>(std::move(func), std::move(*state())));
+      |               ^~~~~~~~
+test/../include/future/future.hh:124:29: error: parse error in template argument list
+  124 |             ::schedule(std::make_unique<continuation<Func, T...>>(std::move(func), std::move(*state())));
+      |                             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+test/../include/future/future.hh: In member function ‘void future<T>::wait()’:
+test/../include/future/future.hh:177:15: error: unable to find numeric literal operator ‘operator""s’
+  177 |         sleep(1s);
+      |               ^~
+test/../include/future/future.hh:177:15: note: use ‘-fext-numeric-literals’ to enable more built-in suffixes
+test/../include/future/future.hh: In member function ‘Result future<T>::then_wrapped(Func&&)’:
+test/../include/future/future.hh:223:29: error: there are no arguments to ‘need_preempt’ that depend on a template parameter, so a declaration of ‘need_preempt’ must be available [-fpermissive]
+  223 |         if (available() && !need_preempt()) {
+      |                             ^~~~~~~~~~~~
+test/../include/future/future.hh:223:29: note: (if you use ‘-fpermissive’, G++ will accept your code, but allowing the use of an undeclared name is deprecated)
+test/../include/future/future.hh: In lambda function:
+test/../include/future/future.hh:297:17: error: there are no arguments to ‘engine_exit’ that depend on a template parameter, so a declaration of ‘engine_exit’ must be available [-fpermissive]
+  297 |                 engine_exit(std::current_exception());
+      |                 ^~~~~~~~~~~
+test/../include/future/future.hh: In member function ‘future<T> future<T>::handle_exception_type(Func&&)’:
+test/../include/future/future.hh:322:23: error: ‘function_traits’ does not name a type
+  322 |         using trait = function_traits<Func>;
+      |                       ^~~~~~~~~~~~~~~
+test/../include/future/future.hh:323:23: error: ‘trait’ has not been declared
+  323 |         static_assert(trait::arity == 1, "func can take only one parameter");
+      |                       ^~~~~
+test/../include/future/future.hh:324:34: error: ‘trait’ has not been declared
+  324 |         using ex_type = typename trait::template arg<0>::type;
+      |                                  ^~~~~
+test/../include/future/future.hh:324:53: error: expected template-name before ‘<’ token
+  324 |         using ex_type = typename trait::template arg<0>::type;
+      |                                                     ^
+test/../include/future/future.hh:324:53: error: expected identifier before ‘<’ token
+test/../include/future/future.hh:325:35: error: ‘trait’ has not been declared
+  325 |         using func_ret = typename trait::return_type;
+      |                                   ^~~~~
+test/../include/future/future.hh: In lambda function:
+test/../include/future/future.hh:330:21: error: ‘ex_type’ does not name a type
+  330 |             } catch(ex_type& ex) {
+      |                     ^~~~~~~
+test/../include/future/future.hh:331:33: error: ‘func_ret’ was not declared in this scope
+  331 |                 return futurize<func_ret>::apply(func, ex);
+      |                                 ^~~~~~~~
+test/../include/future/future.hh:331:41: error: template argument 1 is invalid
+  331 |                 return futurize<func_ret>::apply(func, ex);
+      |                                         ^
+test/../include/future/future.hh:331:56: error: ‘ex’ was not declared in this scope
+  331 |                 return futurize<func_ret>::apply(func, ex);
+      |                                                        ^~
+In file included from test/../include/future/all.hh:6,
+                 from test/future_promise_test.cc:2:
+test/../include/future/promise.hh: At global scope:
+test/../include/future/promise.hh:192:13: error: redefinition of ‘void promise<T>::migrated()’
+  192 | inline void promise<T...>::migrated() noexcept {
+      |             ^~~~~~~~~~~~~
+test/../include/future/promise.hh:146:10: note: ‘void promise<T>::migrated()’ previously declared here
+  146 |     void migrated() noexcept{
+      |          ^~~~~~~~
+In file included from test/../include/future/all.hh:7,
+                 from test/future_promise_test.cc:2:
+test/../include/future/futurize.hh:205:52: error: expression must be enclosed in parentheses
+  205 | requires std::is_invocable_v<Func, FuncArgs...> && !is_future_v<std::invoke_result_t<Func, FuncArgs...>>
+      |                                                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      |                                                    (                                                    )
+In file included from /usr/include/c++/10/ranges:46,
+                 from /usr/include/c++/10/bits/ranges_algobase.h:38,
+                 from /usr/include/c++/10/bits/ranges_uninitialized.h:36,
+                 from /usr/include/c++/10/memory:69,
+                 from /home/lifd/googletest/googletest/include/gtest/gtest.h:55,
+                 from test/future_promise_test.cc:1:
+/usr/include/c++/10/tuple: In instantiation of ‘struct std::_Head_base<0, void, false>’:
+/usr/include/c++/10/tuple:341:12:   required from ‘struct std::_Tuple_impl<0, void>’
+/usr/include/c++/10/tuple:520:11:   required from ‘class std::tuple<void>’
+test/../include/future/future_state.hh:18:26:   required from ‘union future_state<void>::any’
+test/../include/future/future_state.hh:20:7:   required from ‘struct future_state<void>’
+test/../include/future/future.hh:41:18:   required from ‘class future<void>’
+test/future_promise_test.cc:59:18:   required from here
+/usr/include/c++/10/tuple:129:17: error: forming reference to void
+  129 |       constexpr _Head_base(const _Head& __h)
+      |                 ^~~~~~~~~~
+/usr/include/c++/10/tuple:166:7: error: forming reference to void
+  166 |       _M_head(_Head_base& __b) noexcept { return __b._M_head_impl; }
+      |       ^~~~~~~
+/usr/include/c++/10/tuple:169:7: error: forming reference to void
+  169 |       _M_head(const _Head_base& __b) noexcept { return __b._M_head_impl; }
+      |       ^~~~~~~
+/usr/include/c++/10/tuple:171:13: error: ‘std::_Head_base<_Idx, _Head, false>::_M_head_impl’ has incomplete type
+  171 |       _Head _M_head_impl;
+      |             ^~~~~~~~~~~~
+/usr/include/c++/10/tuple:171:13: error: invalid use of ‘void’
+/usr/include/c++/10/tuple: In instantiation of ‘struct std::_Tuple_impl<0, void>’:
+/usr/include/c++/10/tuple:520:11:   required from ‘class std::tuple<void>’
+test/../include/future/future_state.hh:18:26:   required from ‘union future_state<void>::any’
+test/../include/future/future_state.hh:20:7:   required from ‘struct future_state<void>’
+test/../include/future/future.hh:41:18:   required from ‘class future<void>’
+test/future_promise_test.cc:59:18:   required from here
+/usr/include/c++/10/tuple:349:7: error: forming reference to void
+  349 |       _M_head(_Tuple_impl& __t) noexcept { return _Base::_M_head(__t); }
+      |       ^~~~~~~
+/usr/include/c++/10/tuple:352:7: error: forming reference to void
+  352 |       _M_head(const _Tuple_impl& __t) noexcept { return _Base::_M_head(__t); }
+      |       ^~~~~~~
+/usr/include/c++/10/tuple:358:17: error: forming reference to void
+  358 |       constexpr _Tuple_impl(const _Head& __head)
+      |                 ^~~~~~~~~~~
+/usr/include/c++/10/tuple:392:2: error: forming reference to void
+  392 |  _Tuple_impl(allocator_arg_t __tag, const _Alloc& __a,
+      |  ^~~~~~~~~~~
+/usr/include/c++/10/tuple: In instantiation of ‘class std::tuple<void>’:
+test/../include/future/future_state.hh:18:26:   required from ‘union future_state<void>::any’
+test/../include/future/future_state.hh:20:7:   required from ‘struct future_state<void>’
+test/../include/future/future.hh:41:18:   required from ‘class future<void>’
+test/future_promise_test.cc:59:18:   required from here
+/usr/include/c++/10/tuple:542:65: error: forming reference to void
+  542 |    _TCC<_Cond>::template __is_implicitly_constructible<_Args...>(),
+      |    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~
+/usr/include/c++/10/tuple:548:65: error: forming reference to void
+  548 |    _TCC<_Cond>::template __is_explicitly_constructible<_Args...>(),
+      |    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~
+/usr/include/c++/10/tuple:542:65: error: forming reference to void
+  542 |    _TCC<_Cond>::template __is_implicitly_constructible<_Args...>(),
+      |    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~
+/usr/include/c++/10/tuple:548:65: error: forming reference to void
+  548 |    _TCC<_Cond>::template __is_explicitly_constructible<_Args...>(),
+      |    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~
+/usr/include/c++/10/tuple:809:71: error: forming reference to void
+  809 |       operator=(typename conditional<__assignable<const _Elements&...>(),
+      |                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~
+/usr/include/c++/10/tuple:809:71: error: no matching function for call to ‘std::tuple<void>::<expression error>()’
+/usr/include/c++/10/tuple:554:2: note: candidate: ‘template<class ... _UElements> static constexpr std::__enable_if_t<(sizeof... (_UElements) == sizeof... (_Elements)), bool> std::tuple<_Elements>::__assignable() [with _UElements = {_UElements ...}; _Elements = {void}]’
+  554 |  __assignable()
+      |  ^~~~~~~~~~~~
+/usr/include/c++/10/tuple:554:2: note:   template argument deduction/substitution failed:
+/usr/include/c++/10/tuple: In instantiation of ‘static constexpr std::__enable_if_t<(sizeof... (_UElements) == sizeof... (_Elements)), bool> std::tuple<_Elements>::__assignable() [with _UElements = {void}; _Elements = {void}; std::__enable_if_t<(sizeof... (_UElements) == sizeof... (_Elements)), bool> = bool]’:
+/usr/include/c++/10/tuple:820:64:   required from ‘class std::tuple<void>’
+test/../include/future/future_state.hh:18:26:   required from ‘union future_state<void>::any’
+test/../include/future/future_state.hh:20:7:   required from ‘struct future_state<void>’
+test/../include/future/future.hh:41:18:   required from ‘class future<void>’
+test/future_promise_test.cc:59:18:   required from here
+/usr/include/c++/10/tuple:555:61: error: forming reference to void
+  555 |  { return __and_<is_assignable<_Elements&, _UElements>...>::value; }
+      |                                                             ^~~~~
+/usr/include/c++/10/tuple: In instantiation of ‘class std::tuple<void>’:
+test/../include/future/future_state.hh:18:26:   required from ‘union future_state<void>::any’
+test/../include/future/future_state.hh:20:7:   required from ‘struct future_state<void>’
+test/../include/future/future.hh:41:18:   required from ‘class future<void>’
+test/future_promise_test.cc:59:18:   required from here
+/usr/include/c++/10/tuple:820:64:   in ‘constexpr’ expansion of ‘std::tuple<void>::__assignable<void>()’
+/usr/include/c++/10/tuple:820:7: error: ‘constexpr’ call flows off the end of the function
+  820 |       operator=(typename conditional<__assignable<_Elements...>(),
+      |       ^~~~~~~~
+/usr/include/c++/10/tuple:820:64: note: in template argument for type ‘bool’
+  820 |       operator=(typename conditional<__assignable<_Elements...>(),
+      |                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~^~
+test/future_promise_test.cc: In member function ‘virtual void FuturePromiseTest_VoidTest_Test::TestBody()’:
+test/future_promise_test.cc:59:34: error: conversion from ‘future<>’ to non-scalar type ‘future<void>’ requested
+   59 |     future<void> f = p.get_future();
+      |                      ~~~~~~~~~~~~^~
+In file included from test/../include/future/all.hh:5,
+                 from test/future_promise_test.cc:2:
+test/../include/future/future.hh: In instantiation of ‘future<T>::future_state* future<T>::state() [with T = {void}; future<T>::future_state = future_state<void>]’:
+test/../include/future/future.hh:96:34:   required from ‘future<T>::~future() [with T = {void}]’
+test/future_promise_test.cc:59:35:   required from here
+test/../include/future/future.hh:102:25: error: conditional expression between distinct pointer types ‘future_state<>*’ and ‘future<void>::future_state*’ {aka ‘future_state<void>*’} lacks a cast
+  102 |         return _promise ? _promise->_state : &_local_state;
+      |                ~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from test/../include/future/all.hh:6,
+                 from test/future_promise_test.cc:2:
+test/../include/future/promise.hh: In instantiation of ‘void promise<T>::schedule(Func&&) [with Func = std::unique_ptr<task>; T = {int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >}]’:
+test/../include/future/promise.hh:186:21:   required from ‘void promise<T>::make_ready() [with promise<T>::urgent Urgent = promise<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >::urgent<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >::no; T = {int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >}]’
+test/../include/future/promise.hh:92:31:   required from ‘void promise<T>::set_value(A&& ...) [with A = {std::tuple<int, const char*>}; T = {int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >}]’
+test/future_promise_test.cc:35:45:   required from here
+test/../include/future/promise.hh:140:24: error: invalid use of incomplete type ‘struct continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >’
+  140 |         _state = &tws->_state;//看不懂
+      |                   ~~~~~^~~~~~
+In file included from test/../include/future/all.hh:6,
+                 from test/future_promise_test.cc:2:
+test/../include/future/promise.hh:25:8: note: declaration of ‘struct continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >’
+   25 | struct continuation;
+      |        ^~~~~~~~~~~~
+In file included from test/../include/future/all.hh:6,
+                 from test/future_promise_test.cc:2:
+test/../include/future/promise.hh:141:15: error: no match for ‘operator=’ (operand types are ‘std::unique_ptr<task>’ and ‘std::remove_reference<std::unique_ptr<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::default_delete<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > > >&>::type’ {aka ‘std::unique_ptr<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::default_delete<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > > >’})
+  141 |         _task = std::move(tws);
+      |         ~~~~~~^~~~~~~~~~~~~~~~
+In file included from /usr/include/c++/10/memory:83,
+                 from /home/lifd/googletest/googletest/include/gtest/gtest.h:55,
+                 from test/future_promise_test.cc:1:
+/usr/include/c++/10/bits/unique_ptr.h:371:19: note: candidate: ‘std::unique_ptr<_Tp, _Dp>& std::unique_ptr<_Tp, _Dp>::operator=(std::unique_ptr<_Tp, _Dp>&&) [with _Tp = task; _Dp = std::default_delete<task>]’
+  371 |       unique_ptr& operator=(unique_ptr&&) = default;
+      |                   ^~~~~~~~
+/usr/include/c++/10/bits/unique_ptr.h:371:29: note:   no known conversion for argument 1 from ‘std::remove_reference<std::unique_ptr<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::default_delete<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > > >&>::type’ {aka ‘std::unique_ptr<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::default_delete<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > > >’} to ‘std::unique_ptr<task>&&’
+  371 |       unique_ptr& operator=(unique_ptr&&) = default;
+      |                             ^~~~~~~~~~~~
+/usr/include/c++/10/bits/unique_ptr.h:386:2: note: candidate: ‘template<class _Up, class _Ep> typename std::enable_if<std::__and_<std::__and_<std::is_convertible<typename std::unique_ptr<_Up, _Ep>::pointer, typename std::__uniq_ptr_impl<_Tp, _Dp>::pointer>, std::__not_<std::is_array<_Up> > >, std::is_assignable<_T2&, _U2&&> >::value, std::unique_ptr<_Tp, _Dp>&>::type std::unique_ptr<_Tp, _Dp>::operator=(std::unique_ptr<_Up, _Ep>&&) [with _Up = _Up; _Ep = _Ep; _Tp = task; _Dp = std::default_delete<task>]’
+  386 |  operator=(unique_ptr<_Up, _Ep>&& __u) noexcept
+      |  ^~~~~~~~
+/usr/include/c++/10/bits/unique_ptr.h:386:2: note:   template argument deduction/substitution failed:
+/usr/include/c++/10/bits/unique_ptr.h: In substitution of ‘template<class _Up, class _Ep> typename std::enable_if<std::__and_<std::__and_<std::is_convertible<typename std::unique_ptr<_Tp, _Dp>::pointer, task*>, std::__not_<std::is_array<_Tp> > >, std::is_assignable<std::default_delete<task>&, _U2&&> >::value, std::unique_ptr<task>&>::type std::unique_ptr<task>::operator=<_Up, _Ep>(std::unique_ptr<_Tp, _Dp>&&) [with _Up = continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >; _Ep = std::default_delete<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > >]’:
+test/../include/future/promise.hh:141:15:   required from ‘void promise<T>::schedule(Func&&) [with Func = std::unique_ptr<task>; T = {int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >}]’
+test/../include/future/promise.hh:186:21:   required from ‘void promise<T>::make_ready() [with promise<T>::urgent Urgent = promise<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >::urgent<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >::no; T = {int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >}]’
+test/../include/future/promise.hh:92:31:   required from ‘void promise<T>::set_value(A&& ...) [with A = {std::tuple<int, const char*>}; T = {int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >}]’
+test/future_promise_test.cc:35:45:   required from here
+/usr/include/c++/10/bits/unique_ptr.h:386:2: error: no type named ‘type’ in ‘struct std::enable_if<false, std::unique_ptr<task>&>’
+test/../include/future/promise.hh: In instantiation of ‘void promise<T>::schedule(Func&&) [with Func = std::unique_ptr<task>; T = {int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >}]’:
+test/../include/future/promise.hh:186:21:   required from ‘void promise<T>::make_ready() [with promise<T>::urgent Urgent = promise<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >::urgent<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >::no; T = {int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >}]’
+test/../include/future/promise.hh:92:31:   required from ‘void promise<T>::set_value(A&& ...) [with A = {std::tuple<int, const char*>}; T = {int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >}]’
+test/future_promise_test.cc:35:45:   required from here
+/usr/include/c++/10/bits/unique_ptr.h:395:7: note: candidate: ‘std::unique_ptr<_Tp, _Dp>& std::unique_ptr<_Tp, _Dp>::operator=(std::nullptr_t) [with _Tp = task; _Dp = std::default_delete<task>; std::nullptr_t = std::nullptr_t]’
+  395 |       operator=(nullptr_t) noexcept
+      |       ^~~~~~~~
+/usr/include/c++/10/bits/unique_ptr.h:395:17: note:   no known conversion for argument 1 from ‘std::remove_reference<std::unique_ptr<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::default_delete<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > > >&>::type’ {aka ‘std::unique_ptr<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::default_delete<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > > >’} to ‘std::nullptr_t’
+  395 |       operator=(nullptr_t) noexcept
+      |                 ^~~~~~~~~
+In file included from test/../include/future/all.hh:6,
+                 from test/future_promise_test.cc:2:
+test/../include/future/promise.hh: In instantiation of ‘void promise<T>::schedule(Func&&) [with Func = std::unique_ptr<task>; T = {}]’:
+test/../include/future/promise.hh:186:21:   required from ‘void promise<T>::make_ready() [with promise<T>::urgent Urgent = promise<>::urgent<>::no; T = {}]’
+test/../include/future/promise.hh:92:31:   required from ‘void promise<T>::set_value(A&& ...) [with A = {}; T = {}]’
+test/future_promise_test.cc:62:17:   required from here
+test/../include/future/promise.hh:140:24: error: invalid use of incomplete type ‘struct continuation<std::unique_ptr<task> >’
+  140 |         _state = &tws->_state;//看不懂
+      |                   ~~~~~^~~~~~
+In file included from test/../include/future/all.hh:6,
+                 from test/future_promise_test.cc:2:
+test/../include/future/promise.hh:25:8: note: declaration of ‘struct continuation<std::unique_ptr<task> >’
+   25 | struct continuation;
+      |        ^~~~~~~~~~~~
+In file included from test/../include/future/all.hh:6,
+                 from test/future_promise_test.cc:2:
+test/../include/future/promise.hh:141:15: error: no match for ‘operator=’ (operand types are ‘std::unique_ptr<task>’ and ‘std::remove_reference<std::unique_ptr<continuation<std::unique_ptr<task> >, std::default_delete<continuation<std::unique_ptr<task> > > >&>::type’ {aka ‘std::unique_ptr<continuation<std::unique_ptr<task> >, std::default_delete<continuation<std::unique_ptr<task> > > >’})
+  141 |         _task = std::move(tws);
+      |         ~~~~~~^~~~~~~~~~~~~~~~
+In file included from /usr/include/c++/10/memory:83,
+                 from /home/lifd/googletest/googletest/include/gtest/gtest.h:55,
+                 from test/future_promise_test.cc:1:
+/usr/include/c++/10/bits/unique_ptr.h:371:19: note: candidate: ‘std::unique_ptr<_Tp, _Dp>& std::unique_ptr<_Tp, _Dp>::operator=(std::unique_ptr<_Tp, _Dp>&&) [with _Tp = task; _Dp = std::default_delete<task>]’
+  371 |       unique_ptr& operator=(unique_ptr&&) = default;
+      |                   ^~~~~~~~
+/usr/include/c++/10/bits/unique_ptr.h:371:29: note:   no known conversion for argument 1 from ‘std::remove_reference<std::unique_ptr<continuation<std::unique_ptr<task> >, std::default_delete<continuation<std::unique_ptr<task> > > >&>::type’ {aka ‘std::unique_ptr<continuation<std::unique_ptr<task> >, std::default_delete<continuation<std::unique_ptr<task> > > >’} to ‘std::unique_ptr<task>&&’
+  371 |       unique_ptr& operator=(unique_ptr&&) = default;
+      |                             ^~~~~~~~~~~~
+/usr/include/c++/10/bits/unique_ptr.h:386:2: note: candidate: ‘template<class _Up, class _Ep> typename std::enable_if<std::__and_<std::__and_<std::is_convertible<typename std::unique_ptr<_Up, _Ep>::pointer, typename std::__uniq_ptr_impl<_Tp, _Dp>::pointer>, std::__not_<std::is_array<_Up> > >, std::is_assignable<_T2&, _U2&&> >::value, std::unique_ptr<_Tp, _Dp>&>::type std::unique_ptr<_Tp, _Dp>::operator=(std::unique_ptr<_Up, _Ep>&&) [with _Up = _Up; _Ep = _Ep; _Tp = task; _Dp = std::default_delete<task>]’
+  386 |  operator=(unique_ptr<_Up, _Ep>&& __u) noexcept
+      |  ^~~~~~~~
+/usr/include/c++/10/bits/unique_ptr.h:386:2: note:   template argument deduction/substitution failed:
+/usr/include/c++/10/bits/unique_ptr.h: In substitution of ‘template<class _Up, class _Ep> typename std::enable_if<std::__and_<std::__and_<std::is_convertible<typename std::unique_ptr<_Tp, _Dp>::pointer, task*>, std::__not_<std::is_array<_Tp> > >, std::is_assignable<std::default_delete<task>&, _U2&&> >::value, std::unique_ptr<task>&>::type std::unique_ptr<task>::operator=<_Up, _Ep>(std::unique_ptr<_Tp, _Dp>&&) [with _Up = continuation<std::unique_ptr<task> >; _Ep = std::default_delete<continuation<std::unique_ptr<task> > >]’:
+test/../include/future/promise.hh:141:15:   required from ‘void promise<T>::schedule(Func&&) [with Func = std::unique_ptr<task>; T = {}]’
+test/../include/future/promise.hh:186:21:   required from ‘void promise<T>::make_ready() [with promise<T>::urgent Urgent = promise<>::urgent<>::no; T = {}]’
+test/../include/future/promise.hh:92:31:   required from ‘void promise<T>::set_value(A&& ...) [with A = {}; T = {}]’
+test/future_promise_test.cc:62:17:   required from here
+/usr/include/c++/10/bits/unique_ptr.h:386:2: error: no type named ‘type’ in ‘struct std::enable_if<false, std::unique_ptr<task>&>’
+test/../include/future/promise.hh: In instantiation of ‘void promise<T>::schedule(Func&&) [with Func = std::unique_ptr<task>; T = {}]’:
+test/../include/future/promise.hh:186:21:   required from ‘void promise<T>::make_ready() [with promise<T>::urgent Urgent = promise<>::urgent<>::no; T = {}]’
+test/../include/future/promise.hh:92:31:   required from ‘void promise<T>::set_value(A&& ...) [with A = {}; T = {}]’
+test/future_promise_test.cc:62:17:   required from here
+/usr/include/c++/10/bits/unique_ptr.h:395:7: note: candidate: ‘std::unique_ptr<_Tp, _Dp>& std::unique_ptr<_Tp, _Dp>::operator=(std::nullptr_t) [with _Tp = task; _Dp = std::default_delete<task>; std::nullptr_t = std::nullptr_t]’
+  395 |       operator=(nullptr_t) noexcept
+      |       ^~~~~~~~
+/usr/include/c++/10/bits/unique_ptr.h:395:17: note:   no known conversion for argument 1 from ‘std::remove_reference<std::unique_ptr<continuation<std::unique_ptr<task> >, std::default_delete<continuation<std::unique_ptr<task> > > >&>::type’ {aka ‘std::unique_ptr<continuation<std::unique_ptr<task> >, std::default_delete<continuation<std::unique_ptr<task> > > >’} to ‘std::nullptr_t’
+  395 |       operator=(nullptr_t) noexcept
+      |                 ^~~~~~~~~
+In file included from test/../include/future/all.hh:6,
+                 from test/future_promise_test.cc:2:
+test/../include/future/promise.hh: In instantiation of ‘void promise<T>::schedule(Func&&) [with Func = std::unique_ptr<task>; T = {int}]’:
+test/../include/future/promise.hh:186:21:   required from ‘void promise<T>::make_ready() [with promise<T>::urgent Urgent = promise<int>::urgent<int>::no; T = {int}]’
+test/../include/future/promise.hh:115:27:   required from ‘void promise<T>::do_set_value(std::tuple<_Tps ...>) [with promise<T>::urgent Urgent = promise<int>::urgent<int>::no; T = {int}]’
+test/../include/future/promise.hh:85:33:   required from ‘void promise<T>::set_value(std::tuple<_Tps ...>&&) [with T = {int}]’
+test/future_promise_test.cc:21:36:   required from here
+test/../include/future/promise.hh:140:24: error: invalid use of incomplete type ‘struct continuation<std::unique_ptr<task>, int>’
+  140 |         _state = &tws->_state;//看不懂
+      |                   ~~~~~^~~~~~
+In file included from test/../include/future/all.hh:6,
+                 from test/future_promise_test.cc:2:
+test/../include/future/promise.hh:25:8: note: declaration of ‘struct continuation<std::unique_ptr<task>, int>’
+   25 | struct continuation;
+      |        ^~~~~~~~~~~~
+In file included from test/../include/future/all.hh:6,
+                 from test/future_promise_test.cc:2:
+test/../include/future/promise.hh:141:15: error: no match for ‘operator=’ (operand types are ‘std::unique_ptr<task>’ and ‘std::remove_reference<std::unique_ptr<continuation<std::unique_ptr<task>, int>, std::default_delete<continuation<std::unique_ptr<task>, int> > >&>::type’ {aka ‘std::unique_ptr<continuation<std::unique_ptr<task>, int>, std::default_delete<continuation<std::unique_ptr<task>, int> > >’})
+  141 |         _task = std::move(tws);
+      |         ~~~~~~^~~~~~~~~~~~~~~~
+In file included from /usr/include/c++/10/memory:83,
+                 from /home/lifd/googletest/googletest/include/gtest/gtest.h:55,
+                 from test/future_promise_test.cc:1:
+/usr/include/c++/10/bits/unique_ptr.h:371:19: note: candidate: ‘std::unique_ptr<_Tp, _Dp>& std::unique_ptr<_Tp, _Dp>::operator=(std::unique_ptr<_Tp, _Dp>&&) [with _Tp = task; _Dp = std::default_delete<task>]’
+  371 |       unique_ptr& operator=(unique_ptr&&) = default;
+      |                   ^~~~~~~~
+/usr/include/c++/10/bits/unique_ptr.h:371:29: note:   no known conversion for argument 1 from ‘std::remove_reference<std::unique_ptr<continuation<std::unique_ptr<task>, int>, std::default_delete<continuation<std::unique_ptr<task>, int> > >&>::type’ {aka ‘std::unique_ptr<continuation<std::unique_ptr<task>, int>, std::default_delete<continuation<std::unique_ptr<task>, int> > >’} to ‘std::unique_ptr<task>&&’
+  371 |       unique_ptr& operator=(unique_ptr&&) = default;
+      |                             ^~~~~~~~~~~~
+/usr/include/c++/10/bits/unique_ptr.h:386:2: note: candidate: ‘template<class _Up, class _Ep> typename std::enable_if<std::__and_<std::__and_<std::is_convertible<typename std::unique_ptr<_Up, _Ep>::pointer, typename std::__uniq_ptr_impl<_Tp, _Dp>::pointer>, std::__not_<std::is_array<_Up> > >, std::is_assignable<_T2&, _U2&&> >::value, std::unique_ptr<_Tp, _Dp>&>::type std::unique_ptr<_Tp, _Dp>::operator=(std::unique_ptr<_Up, _Ep>&&) [with _Up = _Up; _Ep = _Ep; _Tp = task; _Dp = std::default_delete<task>]’
+  386 |  operator=(unique_ptr<_Up, _Ep>&& __u) noexcept
+      |  ^~~~~~~~
+/usr/include/c++/10/bits/unique_ptr.h:386:2: note:   template argument deduction/substitution failed:
+/usr/include/c++/10/bits/unique_ptr.h: In substitution of ‘template<class _Up, class _Ep> typename std::enable_if<std::__and_<std::__and_<std::is_convertible<typename std::unique_ptr<_Tp, _Dp>::pointer, task*>, std::__not_<std::is_array<_Tp> > >, std::is_assignable<std::default_delete<task>&, _U2&&> >::value, std::unique_ptr<task>&>::type std::unique_ptr<task>::operator=<_Up, _Ep>(std::unique_ptr<_Tp, _Dp>&&) [with _Up = continuation<std::unique_ptr<task>, int>; _Ep = std::default_delete<continuation<std::unique_ptr<task>, int> >]’:
+test/../include/future/promise.hh:141:15:   required from ‘void promise<T>::schedule(Func&&) [with Func = std::unique_ptr<task>; T = {int}]’
+test/../include/future/promise.hh:186:21:   required from ‘void promise<T>::make_ready() [with promise<T>::urgent Urgent = promise<int>::urgent<int>::no; T = {int}]’
+test/../include/future/promise.hh:115:27:   required from ‘void promise<T>::do_set_value(std::tuple<_Tps ...>) [with promise<T>::urgent Urgent = promise<int>::urgent<int>::no; T = {int}]’
+test/../include/future/promise.hh:85:33:   required from ‘void promise<T>::set_value(std::tuple<_Tps ...>&&) [with T = {int}]’
+test/future_promise_test.cc:21:36:   required from here
+/usr/include/c++/10/bits/unique_ptr.h:386:2: error: no type named ‘type’ in ‘struct std::enable_if<false, std::unique_ptr<task>&>’
+test/../include/future/promise.hh: In instantiation of ‘void promise<T>::schedule(Func&&) [with Func = std::unique_ptr<task>; T = {int}]’:
+test/../include/future/promise.hh:186:21:   required from ‘void promise<T>::make_ready() [with promise<T>::urgent Urgent = promise<int>::urgent<int>::no; T = {int}]’
+test/../include/future/promise.hh:115:27:   required from ‘void promise<T>::do_set_value(std::tuple<_Tps ...>) [with promise<T>::urgent Urgent = promise<int>::urgent<int>::no; T = {int}]’
+test/../include/future/promise.hh:85:33:   required from ‘void promise<T>::set_value(std::tuple<_Tps ...>&&) [with T = {int}]’
+test/future_promise_test.cc:21:36:   required from here
+/usr/include/c++/10/bits/unique_ptr.h:395:7: note: candidate: ‘std::unique_ptr<_Tp, _Dp>& std::unique_ptr<_Tp, _Dp>::operator=(std::nullptr_t) [with _Tp = task; _Dp = std::default_delete<task>; std::nullptr_t = std::nullptr_t]’
+  395 |       operator=(nullptr_t) noexcept
+      |       ^~~~~~~~
+/usr/include/c++/10/bits/unique_ptr.h:395:17: note:   no known conversion for argument 1 from ‘std::remove_reference<std::unique_ptr<continuation<std::unique_ptr<task>, int>, std::default_delete<continuation<std::unique_ptr<task>, int> > >&>::type’ {aka ‘std::unique_ptr<continuation<std::unique_ptr<task>, int>, std::default_delete<continuation<std::unique_ptr<task>, int> > >’} to ‘std::nullptr_t’
+  395 |       operator=(nullptr_t) noexcept
+      |                 ^~~~~~~~~
+/usr/include/c++/10/bits/unique_ptr.h: In instantiation of ‘typename std::_MakeUniq<_Tp>::__single_object std::make_unique(_Args&& ...) [with _Tp = continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >; _Args = {std::unique_ptr<task, std::default_delete<task> >}; typename std::_MakeUniq<_Tp>::__single_object = std::unique_ptr<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::default_delete<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > > >]’:
+test/../include/future/promise.hh:139:62:   required from ‘void promise<T>::schedule(Func&&) [with Func = std::unique_ptr<task>; T = {int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >}]’
+test/../include/future/promise.hh:186:21:   required from ‘void promise<T>::make_ready() [with promise<T>::urgent Urgent = promise<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >::urgent<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >::no; T = {int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >}]’
+test/../include/future/promise.hh:92:31:   required from ‘void promise<T>::set_value(A&& ...) [with A = {std::tuple<int, const char*>}; T = {int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >}]’
+test/future_promise_test.cc:35:45:   required from here
+/usr/include/c++/10/bits/unique_ptr.h:962:30: error: invalid use of incomplete type ‘struct continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >’
+  962 |     { return unique_ptr<_Tp>(new _Tp(std::forward<_Args>(__args)...)); }
+      |                              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from test/../include/future/all.hh:6,
+                 from test/future_promise_test.cc:2:
+test/../include/future/promise.hh:25:8: note: declaration of ‘struct continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >’
+   25 | struct continuation;
+      |        ^~~~~~~~~~~~
+In file included from /usr/include/c++/10/memory:83,
+                 from /home/lifd/googletest/googletest/include/gtest/gtest.h:55,
+                 from test/future_promise_test.cc:1:
+/usr/include/c++/10/bits/unique_ptr.h: In instantiation of ‘typename std::_MakeUniq<_Tp>::__single_object std::make_unique(_Args&& ...) [with _Tp = continuation<std::unique_ptr<task> >; _Args = {std::unique_ptr<task, std::default_delete<task> >}; typename std::_MakeUniq<_Tp>::__single_object = std::unique_ptr<continuation<std::unique_ptr<task> >, std::default_delete<continuation<std::unique_ptr<task> > > >]’:
+test/../include/future/promise.hh:139:62:   required from ‘void promise<T>::schedule(Func&&) [with Func = std::unique_ptr<task>; T = {}]’
+test/../include/future/promise.hh:186:21:   required from ‘void promise<T>::make_ready() [with promise<T>::urgent Urgent = promise<>::urgent<>::no; T = {}]’
+test/../include/future/promise.hh:92:31:   required from ‘void promise<T>::set_value(A&& ...) [with A = {}; T = {}]’
+test/future_promise_test.cc:62:17:   required from here
+/usr/include/c++/10/bits/unique_ptr.h:962:30: error: invalid use of incomplete type ‘struct continuation<std::unique_ptr<task> >’
+  962 |     { return unique_ptr<_Tp>(new _Tp(std::forward<_Args>(__args)...)); }
+      |                              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from test/../include/future/all.hh:6,
+                 from test/future_promise_test.cc:2:
+test/../include/future/promise.hh:25:8: note: declaration of ‘struct continuation<std::unique_ptr<task> >’
+   25 | struct continuation;
+      |        ^~~~~~~~~~~~
+In file included from /usr/include/c++/10/memory:83,
+                 from /home/lifd/googletest/googletest/include/gtest/gtest.h:55,
+                 from test/future_promise_test.cc:1:
+/usr/include/c++/10/bits/unique_ptr.h: In instantiation of ‘typename std::_MakeUniq<_Tp>::__single_object std::make_unique(_Args&& ...) [with _Tp = continuation<std::unique_ptr<task>, int>; _Args = {std::unique_ptr<task, std::default_delete<task> >}; typename std::_MakeUniq<_Tp>::__single_object = std::unique_ptr<continuation<std::unique_ptr<task>, int>, std::default_delete<continuation<std::unique_ptr<task>, int> > >]’:
+test/../include/future/promise.hh:139:62:   required from ‘void promise<T>::schedule(Func&&) [with Func = std::unique_ptr<task>; T = {int}]’
+test/../include/future/promise.hh:186:21:   required from ‘void promise<T>::make_ready() [with promise<T>::urgent Urgent = promise<int>::urgent<int>::no; T = {int}]’
+test/../include/future/promise.hh:115:27:   required from ‘void promise<T>::do_set_value(std::tuple<_Tps ...>) [with promise<T>::urgent Urgent = promise<int>::urgent<int>::no; T = {int}]’
+test/../include/future/promise.hh:85:33:   required from ‘void promise<T>::set_value(std::tuple<_Tps ...>&&) [with T = {int}]’
+test/future_promise_test.cc:21:36:   required from here
+/usr/include/c++/10/bits/unique_ptr.h:962:30: error: invalid use of incomplete type ‘struct continuation<std::unique_ptr<task>, int>’
+  962 |     { return unique_ptr<_Tp>(new _Tp(std::forward<_Args>(__args)...)); }
+      |                              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from test/../include/future/all.hh:6,
+                 from test/future_promise_test.cc:2:
+test/../include/future/promise.hh:25:8: note: declaration of ‘struct continuation<std::unique_ptr<task>, int>’
+   25 | struct continuation;
+      |        ^~~~~~~~~~~~
+In file included from /usr/include/c++/10/memory:83,
+                 from /home/lifd/googletest/googletest/include/gtest/gtest.h:55,
+                 from test/future_promise_test.cc:1:
+/usr/include/c++/10/bits/unique_ptr.h: In instantiation of ‘void std::default_delete<_Tp>::operator()(_Tp*) const [with _Tp = continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >]’:
+/usr/include/c++/10/bits/unique_ptr.h:361:17:   required from ‘std::unique_ptr<_Tp, _Dp>::~unique_ptr() [with _Tp = continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >; _Dp = std::default_delete<continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > >]’
+test/../include/future/promise.hh:139:62:   required from ‘void promise<T>::schedule(Func&&) [with Func = std::unique_ptr<task>; T = {int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >}]’
+test/../include/future/promise.hh:186:21:   required from ‘void promise<T>::make_ready() [with promise<T>::urgent Urgent = promise<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >::urgent<int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >::no; T = {int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >}]’
+test/../include/future/promise.hh:92:31:   required from ‘void promise<T>::set_value(A&& ...) [with A = {std::tuple<int, const char*>}; T = {int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >}]’
+test/future_promise_test.cc:35:45:   required from here
+/usr/include/c++/10/bits/unique_ptr.h:83:16: error: invalid application of ‘sizeof’ to incomplete type ‘continuation<std::unique_ptr<task>, int, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >’
+   83 |  static_assert(sizeof(_Tp)>0,
+      |                ^~~~~~~~~~~
+/usr/include/c++/10/bits/unique_ptr.h: In instantiation of ‘void std::default_delete<_Tp>::operator()(_Tp*) const [with _Tp = continuation<std::unique_ptr<task> >]’:
+/usr/include/c++/10/bits/unique_ptr.h:361:17:   required from ‘std::unique_ptr<_Tp, _Dp>::~unique_ptr() [with _Tp = continuation<std::unique_ptr<task> >; _Dp = std::default_delete<continuation<std::unique_ptr<task> > >]’
+test/../include/future/promise.hh:139:62:   required from ‘void promise<T>::schedule(Func&&) [with Func = std::unique_ptr<task>; T = {}]’
+test/../include/future/promise.hh:186:21:   required from ‘void promise<T>::make_ready() [with promise<T>::urgent Urgent = promise<>::urgent<>::no; T = {}]’
+test/../include/future/promise.hh:92:31:   required from ‘void promise<T>::set_value(A&& ...) [with A = {}; T = {}]’
+test/future_promise_test.cc:62:17:   required from here
+/usr/include/c++/10/bits/unique_ptr.h:83:16: error: invalid application of ‘sizeof’ to incomplete type ‘continuation<std::unique_ptr<task> >’
+/usr/include/c++/10/bits/unique_ptr.h: In instantiation of ‘void std::default_delete<_Tp>::operator()(_Tp*) const [with _Tp = continuation<std::unique_ptr<task>, int>]’:
+/usr/include/c++/10/bits/unique_ptr.h:361:17:   required from ‘std::unique_ptr<_Tp, _Dp>::~unique_ptr() [with _Tp = continuation<std::unique_ptr<task>, int>; _Dp = std::default_delete<continuation<std::unique_ptr<task>, int> >]’
+test/../include/future/promise.hh:139:62:   required from ‘void promise<T>::schedule(Func&&) [with Func = std::unique_ptr<task>; T = {int}]’
+test/../include/future/promise.hh:186:21:   required from ‘void promise<T>::make_ready() [with promise<T>::urgent Urgent = promise<int>::urgent<int>::no; T = {int}]’
+test/../include/future/promise.hh:115:27:   required from ‘void promise<T>::do_set_value(std::tuple<_Tps ...>) [with promise<T>::urgent Urgent = promise<int>::urgent<int>::no; T = {int}]’
+test/../include/future/promise.hh:85:33:   required from ‘void promise<T>::set_value(std::tuple<_Tps ...>&&) [with T = {int}]’
+test/future_promise_test.cc:21:36:   required from here
+/usr/include/c++/10/bits/unique_ptr.h:83:16: error: invalid application of ‘sizeof’ to incomplete type ‘continuation<std::unique_ptr<task>, int>’
+make: *** [test/future_promise_test.o] Error 1

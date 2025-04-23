@@ -1,0 +1,72 @@
+g++ -Wall -std=c++20 -g -Iinclude -pthread -MMD -c test/new_tests/smp_test.cc -o build/test/new_tests/smp_test.o
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all8.hh: In static member function ‘static file_desc file_desc::temporary(std::string)’:
+include/../include/app/../future/future_all8.hh:2045:9: warning: unused variable ‘r’ [-Wunused-variable]
+ 2045 |     int r = ::unlink(templat.data());
+      |         ^
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all8.hh: In static member function ‘static io_priority_class io_queue::register_one_priority_class(std::string, uint32_t)’:
+include/../include/app/../future/future_all8.hh:3541:29: warning: moving a local object in a return statement prevents copy elision [-Wpessimizing-move]
+ 3541 |             return std::move(p);
+      |                    ~~~~~~~~~^~~
+include/../include/app/../future/future_all8.hh:3541:29: note: remove ‘std::move’ call
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all8.hh: In member function ‘void reactor::enable_timer(std::chrono::_V2::steady_clock::time_point)’:
+include/../include/app/../future/future_all8.hh:5416:10: warning: unused variable ‘ret’ [-Wunused-variable]
+ 5416 |     auto ret = timer_settime(_steady_clock_timer, TIMER_ABSTIME, &its, NULL);
+      |          ^~~
+include/../include/app/../future/future_all8.hh: In member function ‘void thread_context::setup()’:
+include/../include/app/../future/future_all8.hh:6020:10: warning: unused variable ‘r’ [-Wunused-variable]
+ 6020 |     auto r = getcontext(&initial_context);//保存当前上下文到initial_context中.
+      |          ^
+include/../include/app/../future/future_all8.hh: In member function ‘future<> reactor::run_exit_tasks()’:
+include/../include/app/../future/future_all8.hh:6254:1: warning: no return statement in function returning non-void [-Wreturn-type]
+ 6254 | }
+      | ^
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all8.hh: In constructor ‘reactor::reactor(unsigned int)’:
+include/../include/app/../future/future_all8.hh:3647:18: warning: ‘reactor::_io_context’ will be initialized after [-Wreorder]
+ 3647 |     io_context_t _io_context;
+      |                  ^~~~~~~~~~~
+include/../include/app/../future/future_all8.hh:3644:15: warning:   ‘semaphore reactor::_io_context_available’ [-Wreorder]
+ 3644 |     semaphore _io_context_available;
+      |               ^~~~~~~~~~~~~~~~~~~~~
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all8.hh:6283:1: warning:   when initialized here [-Wreorder]
+ 6283 | reactor::reactor(unsigned id)
+      | ^~~~~~~
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all8.hh: In member function ‘future<io_event> reactor::submit_io(Func)’:
+include/../include/app/../future/future_all8.hh:8164:1: warning: no return statement in function returning non-void [-Wreturn-type]
+ 8164 | }
+      | ^
+test/new_tests/smp_test.cc: In lambda function:
+test/new_tests/smp_test.cc:40:22: warning: format ‘%s’ expects argument of type ‘char*’, but argument 3 has type ‘const string’ {aka ‘const std::__cxx11::basic_string<char>’} [-Wformat=]
+   40 |         printf("%s: %s\n", (result ? "PASS" : "FAIL"), msg);
+      |                     ~^
+      |                      |
+      |                      char*
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all8.hh: In instantiation of ‘void install_oneshot_signal_handler() [with int Signal = 11; void (* Func)() = sigsegv_action]’:
+include/../include/app/../future/future_all8.hh:6441:61:   required from here
+include/../include/app/../future/future_all8.hh:3941:10: warning: unused variable ‘r’ [-Wunused-variable]
+ 3941 |     auto r = ::sigaction(Signal, &sa, nullptr);
+      |          ^
+include/../include/app/../future/future_all8.hh: In instantiation of ‘void install_oneshot_signal_handler() [with int Signal = 6; void (* Func)() = sigabrt_action]’:
+include/../include/app/../future/future_all8.hh:6442:61:   required from here
+include/../include/app/../future/future_all8.hh:3941:10: warning: unused variable ‘r’ [-Wunused-variable]
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all8.hh: At global scope:
+include/../include/app/../future/future_all8.hh:6155:18: warning: ‘always_inline’ function might not be inlinable [-Wattributes]
+ 6155 | std::tuple<T...> future<T...>::get() {
+      |                  ^~~~~~~~~~~~
+g++ -Wall -std=c++20 -g -Iinclude -pthread -MMD -c include/app/app-template.cc -o build/include/app/app-template.o
+g++ build/include/resource/resource.o build/test/new_tests/smp_test.o build/include/util/backtrace.o build/include/app/app-template.o -o build/smp_test -pthread -lboost_system -lboost_thread -lrt -lhwloc -lboost_program_options -laio  -lunwind
