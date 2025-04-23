@@ -3622,12 +3622,6 @@ bool is_port_unspecified(ipv4_addr &addr) {
 
 static inline
 std::ostream& operator<<(std::ostream &os, ipv4_addr addr) {
-    // fprint(os, "%d.%d.%d.%d",
-    //         (addr.ip >> 24) & 0xff,
-    //         (addr.ip >> 16) & 0xff,
-    //         (addr.ip >> 8) & 0xff,
-    //         (addr.ip) & 0xff);
-    // return os << ":" << addr.port;
 }
 
 static inline
@@ -3638,7 +3632,6 @@ socket_address make_ipv4_address(ipv4_addr addr) {
     sa.u.in.sin_addr.s_addr = htonl(addr.ip);
     return sa;
 }
-
 inline
 socket_address make_ipv4_address(uint32_t ip, uint16_t port) {
     socket_address sa;
