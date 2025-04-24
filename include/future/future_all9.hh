@@ -1616,7 +1616,7 @@ class promise<void> : public promise<> {};
 #include <sys/epoll.h>
 #include <sys/mman.h>
 #include <signal.h>
-#include <boost/optional.hpp>
+#include <optional>
 #include <pthread.h>
 #include <signal.h>
 #include <memory>
@@ -1633,9 +1633,373 @@ void throw_system_error_on(bool condition, const char* what_arg = "!") {
 }
 
 
+
+class deleter final {
+public:
+    /// \cond internal
+    struct impl;
+    struct raw_object_tag {};
+    /// \endcond
+private:
+    // if bit 0 set, point to object to be freed directly.
+    impl* _impl = nullptr;
+public:
+    /// Constructs an empty deleter that does nothing in its destructor.
+    deleter() = default;
+    deleter(const deleter&) = delete;
+    /// Moves a deleter.
+    deleter(deleter&& x) noexcept : _impl(x._impl) { x._impl = nullptr; }
+    /// \cond internal
+    explicit deleter(impl* i) : _impl(i) {}
+    deleter(raw_object_tag tag, void* object)
+        : _impl(from_raw_object(object)) {}
+    /// \endcond
+    /// Destroys the deleter and carries out the encapsulated action.
+    ~deleter();
+    deleter& operator=(deleter&& x);
+    deleter& operator=(deleter&) = delete;
+    /// Performs a sharing operation.  The encapsulated action will only
+    /// be carried out after both the original deleter and the returned
+    /// deleter are both destroyed.
+    ///
+    /// \return a deleter with the same encapsulated action as this one.
+    deleter share();
+    /// Checks whether the deleter has an associated action.
+    explicit operator bool() const { return bool(_impl); }
+    /// \cond internal
+    void reset(impl* i) {
+        this->~deleter();
+        new (this) deleter(i);
+    }
+    /// \endcond
+    /// Appends another deleter to this deleter.  When this deleter is
+    /// destroyed, both encapsulated actions will be carried out.
+    void append(deleter d);
+private:
+    static bool is_raw_object(impl* i) {
+        auto x = reinterpret_cast<uintptr_t>(i);
+        return x & 1;
+    }
+    bool is_raw_object() const {
+        return is_raw_object(_impl);
+    }
+    static void* to_raw_object(impl* i) {
+        auto x = reinterpret_cast<uintptr_t>(i);
+        return reinterpret_cast<void*>(x & ~uintptr_t(1));
+    }
+    void* to_raw_object() const {
+        return to_raw_object(_impl);
+    }
+    impl* from_raw_object(void* object) {
+        auto x = reinterpret_cast<uintptr_t>(object);
+        return reinterpret_cast<impl*>(x | 1);
+    }
+};
+
+/// \cond internal
+struct deleter::impl {
+    unsigned refs = 1;
+    deleter next;
+    impl(deleter next) : next(std::move(next)) {}
+    virtual ~impl() {}
+};
+/// \endcond
+
+inline
+deleter::~deleter() {
+    if (is_raw_object()) {
+        std::free(to_raw_object());
+        return;
+    }
+    if (_impl && --_impl->refs == 0) {
+        delete _impl;
+    }
+}
+
+inline
+deleter& deleter::operator=(deleter&& x) {
+    if (this != &x) {
+        this->~deleter();
+        new (this) deleter(std::move(x));
+    }
+    return *this;
+}
+
+/// \cond internal
+template <typename Deleter>
+struct lambda_deleter_impl final : deleter::impl {
+    Deleter del;
+    lambda_deleter_impl(deleter next, Deleter&& del)
+        : impl(std::move(next)), del(std::move(del)) {}
+    virtual ~lambda_deleter_impl() override { del(); }
+};
+
+template <typename Object>
+struct object_deleter_impl final : deleter::impl {
+    Object obj;
+    object_deleter_impl(deleter next, Object&& obj)
+        : impl(std::move(next)), obj(std::move(obj)) {}
+};
+
+template <typename Object>
+inline
+object_deleter_impl<Object>* make_object_deleter_impl(deleter next, Object obj) {
+    return new object_deleter_impl<Object>(std::move(next), std::move(obj));
+}
+/// \endcond
+
+/// Makes a \ref deleter that encapsulates the action of
+/// destroying an object, as well as running another deleter.  The input
+/// object is moved to the deleter, and destroyed when the deleter is destroyed.
+///
+/// \param d deleter that will become part of the new deleter's encapsulated action
+/// \param o object whose destructor becomes part of the new deleter's encapsulated action
+/// \related deleter
+template <typename Object>
+deleter
+make_deleter(deleter next, Object o) {
+    return deleter(new lambda_deleter_impl<Object>(std::move(next), std::move(o)));
+}
+
+/// Makes a \ref deleter that encapsulates the action of destroying an object.  The input
+/// object is moved to the deleter, and destroyed when the deleter is destroyed.
+///
+/// \param o object whose destructor becomes the new deleter's encapsulated action
+/// \related deleter
+template <typename Object>
+deleter
+make_deleter(Object o) {
+    return make_deleter(deleter(), std::move(o));
+}
+
+/// \cond internal
+struct free_deleter_impl final : deleter::impl {
+    void* obj;
+    free_deleter_impl(void* obj) : impl(deleter()), obj(obj) {}
+    virtual ~free_deleter_impl() override { std::free(obj); }
+};
+/// \endcond
+
+inline
+deleter
+deleter::share() {
+    if (!_impl) {
+        return deleter();
+    }
+    if (is_raw_object()) {
+        _impl = new free_deleter_impl(to_raw_object());
+    }
+    ++_impl->refs;
+    return deleter(_impl);
+}
+
+// Appends 'd' to the chain of deleters. Avoids allocation if possible. For
+// performance reasons the current chain should be shorter and 'd' should be
+// longer.
+inline
+void deleter::append(deleter d) {
+    if (!d._impl) {
+        return;
+    }
+    impl* next_impl = _impl;
+    deleter* next_d = this;
+    while (next_impl) {
+        assert(next_impl != d._impl);
+        if (is_raw_object(next_impl)) {
+            next_d->_impl = next_impl = new free_deleter_impl(to_raw_object(next_impl));
+        }
+        if (next_impl->refs != 1) {
+            next_d->_impl = next_impl = make_object_deleter_impl(std::move(next_impl->next), deleter(next_impl));
+        }
+        next_d = &next_impl->next;
+        next_impl = next_d->_impl;
+    }
+    next_d->_impl = d._impl;
+    d._impl = nullptr;
+}
+
+/// Makes a deleter that calls \c std::free() when it is destroyed.
+///
+/// \param obj object to free.
+/// \related deleter
+inline
+deleter
+make_free_deleter(void* obj) {
+    if (!obj) {
+        return deleter();
+    }
+    return deleter(deleter::raw_object_tag(), obj);
+}
+
+/// Makes a deleter that calls \c std::free() when it is destroyed, as well
+/// as invoking the encapsulated action of another deleter.
+///
+/// \param d deleter to invoke.
+/// \param obj object to free.
+/// \related deleter
+inline
+deleter
+make_free_deleter(deleter next, void* obj) {
+    return make_deleter(std::move(next), [obj] () mutable { std::free(obj); });
+}
+
+/// \see make_deleter(Object)
+/// \related deleter
+template <typename T>
+inline
+deleter
+make_object_deleter(T&& obj) {
+    return deleter{make_object_deleter_impl(deleter(), std::move(obj))};
+}
+
+/// \see make_deleter(deleter, Object)
+/// \related deleter
+template <typename T>
+inline
+deleter
+make_object_deleter(deleter d, T&& obj) {
+    return deleter{make_object_deleter_impl(std::move(d), std::move(obj))};
+}
+
+
+
+
+
+template <typename CharType>
+class temporary_buffer {
+    static_assert(sizeof(CharType) == 1, "must buffer stream of bytes");
+    CharType* _buffer;
+    size_t _size;
+    deleter _deleter;
+public:
+    explicit temporary_buffer(size_t size)
+        : _buffer(static_cast<CharType*>(malloc(size * sizeof(CharType)))), _size(size)
+        , _deleter(make_free_deleter(_buffer)) {
+        if (size && !_buffer) {
+            throw std::bad_alloc();
+        }
+    }
+    //explicit temporary_buffer(CharType* borrow, size_t size) : _buffer(borrow), _size(size) {}
+    /// Creates an empty \c temporary_buffer that does not point at anything.
+    temporary_buffer()
+        : _buffer(nullptr)
+        , _size(0) {}
+    temporary_buffer(const temporary_buffer&) = delete;
+    /// Moves a \c temporary_buffer.
+    temporary_buffer(temporary_buffer&& x) noexcept : _buffer(x._buffer), _size(x._size), _deleter(std::move(x._deleter)) {
+        x._buffer = nullptr;
+        x._size = 0;
+    }
+    temporary_buffer(CharType* buf, size_t size, deleter d)
+        : _buffer(buf), _size(size), _deleter(std::move(d)) {}
+    temporary_buffer(const CharType* src, size_t size) : temporary_buffer(size) {
+        std::copy_n(src, size, _buffer);
+    }
+    void operator=(const temporary_buffer&) = delete;
+    /// Moves a \c temporary_buffer.
+    temporary_buffer& operator=(temporary_buffer&& x) {
+        if (this != &x) {
+            _buffer = x._buffer;
+            _size = x._size;
+            _deleter = std::move(x._deleter);
+            x._buffer = nullptr;
+            x._size = 0;
+        }
+        return *this;
+    }
+    /// Gets a pointer to the beginning of the buffer.
+    const CharType* get() const { return _buffer; }
+    /// Gets a writable pointer to the beginning of the buffer.  Use only
+    /// when you are certain no user expects the buffer data not to change.
+    CharType* get_write() { return _buffer; }
+    /// Gets the buffer size.
+    size_t size() const { return _size; }
+    /// Gets a pointer to the beginning of the buffer.
+    const CharType* begin() const { return _buffer; }
+    /// Gets a pointer to the end of the buffer.
+    const CharType* end() const { return _buffer + _size; }
+    temporary_buffer prefix(size_t size) && {
+        auto ret = std::move(*this);
+        ret._size = size;
+        return ret;
+    }
+    CharType operator[](size_t pos) const {
+        return _buffer[pos];
+    }
+    bool empty() const { return !size(); }
+    explicit operator bool() const { return size(); }
+    temporary_buffer share() {
+        return temporary_buffer(_buffer, _size, _deleter.share());
+    }.
+    temporary_buffer share(size_t pos, size_t len) {
+        auto ret = share();
+        ret._buffer += pos;
+        ret._size = len;
+        return ret;
+    }
+    void trim_front(size_t pos) {
+        _buffer += pos;
+        _size -= pos;
+    }
+    void trim(size_t pos) {
+        _size = pos;
+    }
+    deleter release() {
+        return std::move(_deleter);
+    }
+    static temporary_buffer aligned(size_t alignment, size_t size) {
+        void *ptr = nullptr;
+        auto ret = ::posix_memalign(&ptr, alignment, size * sizeof(CharType));
+        auto buf = static_cast<CharType*>(ptr);
+        if (ret) {
+            throw std::bad_alloc();
+        }
+        return temporary_buffer(buf, size, make_free_deleter(buf));
+    }
+
+    /// Compare contents of this buffer with another buffer for equality
+    ///
+    /// \param o buffer to compare with
+    /// \return true if and only if contents are the same
+    bool operator==(const temporary_buffer<char>& o) const {
+        return size() == o.size() && std::equal(begin(), end(), o.begin());
+    }
+
+    /// Compare contents of this buffer with another buffer for inequality
+    ///
+    /// \param o buffer to compare with
+    /// \return true if and only if contents are not the same
+    bool operator!=(const temporary_buffer<char>& o) const {
+        return !(*this == o);
+    }
+};
+
+
+
+
+
+
 #include <arpa/inet.h>
 #include <iosfwd>
 #include <utility>
+
+namespace net {
+
+enum class ip_protocol_num : uint8_t {
+    icmp = 1, tcp = 6, udp = 17, unused = 255
+};
+
+enum class eth_protocol_num : uint16_t {
+    ipv4 = 0x0800, arp = 0x0806, ipv6 = 0x86dd
+};
+
+const uint8_t eth_hdr_len = 14;
+const uint8_t tcp_hdr_len_min = 20;
+const uint8_t ipv4_hdr_len_min = 20;
+const uint8_t ipv6_hdr_len_min = 40;
+const uint16_t ip_packet_len_max = 65535;
+
+}
 inline uint64_t ntohq(uint64_t v) {
     return __builtin_bswap64(v);
 }
@@ -1822,6 +2186,594 @@ struct ipv4_addr {
     }
     ipv4_addr(socket_address &&sa) : ipv4_addr(sa) {}
 };
+
+
+
+namespace net {
+
+struct fragment {
+    char* base;
+    size_t size;
+};
+
+struct offload_info {
+    ip_protocol_num protocol = ip_protocol_num::unused;
+    bool needs_csum = false;
+    uint8_t ip_hdr_len = 20;
+    uint8_t tcp_hdr_len = 20;
+    uint8_t udp_hdr_len = 8;
+    bool needs_ip_csum = false;
+    bool reassembled = false;
+    uint16_t tso_seg_size = 0;
+    // HW stripped VLAN header (CPU order)
+    std::optional<uint16_t> vlan_tci;
+};
+
+// Zero-copy friendly packet class
+//
+// For implementing zero-copy, we need a flexible destructor that can
+// destroy packet data in different ways: decrementing a reference count,
+// or calling a free()-like function.
+//
+// Moreover, we need different destructors for each set of fragments within
+// a single fragment. For example, a header and trailer might need delete[]
+// to be called, while the internal data needs a reference count to be
+// released.  Matters are complicated in that fragments can be split
+// (due to virtual/physical translation).
+//
+// To implement this, we associate each packet with a single destructor,
+// but allow composing a packet from another packet plus a fragment to
+// be added, with its own destructor, causing the destructors to be chained.
+//
+// The downside is that the data needed for the destructor is duplicated,
+// if it is already available in the fragment itself.
+//
+// As an optimization, when we allocate small fragments, we allocate some
+// extra space, so prepending to the packet does not require extra
+// allocations.  This is useful when adding headers.
+//
+class packet final {
+    // enough for lots of headers, not quite two cache lines:
+    static constexpr size_t internal_data_size = 128 - 16;
+    static constexpr size_t default_nr_frags = 4;
+
+    struct pseudo_vector {
+        fragment* _start;
+        fragment* _finish;
+        pseudo_vector(fragment* start, size_t nr)
+            : _start(start), _finish(_start + nr) {}
+        fragment* begin() { return _start; }
+        fragment* end() { return _finish; }
+        fragment& operator[](size_t idx) { return _start[idx]; }
+    };
+
+    struct impl {
+        // when destroyed, virtual destructor will reclaim resources
+        deleter _deleter;
+        unsigned _len = 0;
+        uint16_t _nr_frags = 0;
+        uint16_t _allocated_frags;
+        offload_info _offload_info;
+        std::optional<uint32_t> _rss_hash;
+        char _data[internal_data_size]; // only _frags[0] may use
+        unsigned _headroom = internal_data_size; // in _data
+        // FIXME: share _data/_frags space
+
+        fragment _frags[];
+
+        impl(size_t nr_frags = default_nr_frags);
+        impl(const impl&) = delete;
+        impl(fragment frag, size_t nr_frags = default_nr_frags);
+
+        pseudo_vector fragments() { return { _frags, _nr_frags }; }
+
+        static std::unique_ptr<impl> allocate(size_t nr_frags) {
+            nr_frags = std::max(nr_frags, default_nr_frags);
+            return std::unique_ptr<impl>(new (nr_frags) impl(nr_frags));
+        }
+
+        static std::unique_ptr<impl> copy(impl* old, size_t nr) {
+            auto n = allocate(nr);
+            n->_deleter = std::move(old->_deleter);
+            n->_len = old->_len;
+            n->_nr_frags = old->_nr_frags;
+            n->_headroom = old->_headroom;
+            n->_offload_info = old->_offload_info;
+            n->_rss_hash = old->_rss_hash;
+            std::copy(old->_frags, old->_frags + old->_nr_frags, n->_frags);
+            old->copy_internal_fragment_to(n.get());
+            return std::move(n);
+        }
+
+        static std::unique_ptr<impl> copy(impl* old) {
+            return copy(old, old->_nr_frags);
+        }
+
+        static std::unique_ptr<impl> allocate_if_needed(std::unique_ptr<impl> old, size_t extra_frags) {
+            if (old->_allocated_frags >= old->_nr_frags + extra_frags) {
+                return std::move(old);
+            }
+            return copy(old.get(), std::max<size_t>(old->_nr_frags + extra_frags, 2 * old->_nr_frags));
+        }
+        void* operator new(size_t size, size_t nr_frags = default_nr_frags) {
+            assert(nr_frags == uint16_t(nr_frags));
+            return ::operator new(size + nr_frags * sizeof(fragment));
+        }
+        // Matching the operator new above
+        void operator delete(void* ptr, size_t nr_frags) {
+            return ::operator delete(ptr);
+        }
+        // Since the above "placement delete" hides the global one, expose it
+        void operator delete(void* ptr) {
+            return ::operator delete(ptr);
+        }
+
+        bool using_internal_data() const {
+            return _nr_frags
+                    && _frags[0].base >= _data
+                    && _frags[0].base < _data + internal_data_size;
+        }
+
+        void unuse_internal_data() {
+            if (!using_internal_data()) {
+                return;
+            }
+            auto buf = static_cast<char*>(::malloc(_frags[0].size));
+            if (!buf) {
+                throw std::bad_alloc();
+            }
+            deleter d = make_free_deleter(buf);
+            std::copy(_frags[0].base, _frags[0].base + _frags[0].size, buf);
+            _frags[0].base = buf;
+            _deleter.append(std::move(d));
+            _headroom = internal_data_size;
+        }
+        void copy_internal_fragment_to(impl* to) {
+            if (!using_internal_data()) {
+                return;
+            }
+            to->_frags[0].base = to->_data + _headroom;
+            std::copy(_frags[0].base, _frags[0].base + _frags[0].size,
+                    to->_frags[0].base);
+        }
+    };
+    packet(std::unique_ptr<impl>&& impl) : _impl(std::move(impl)) {}
+    std::unique_ptr<impl> _impl;
+public:
+    static packet from_static_data(const char* data, size_t len) {
+        return {fragment{const_cast<char*>(data), len}, deleter()};
+    }
+
+    // build empty packet
+    packet();
+    // build empty packet with nr_frags allocated
+    packet(size_t nr_frags);
+    // move existing packet
+    packet(packet&& x) noexcept;
+    // copy data into packet
+    packet(const char* data, size_t len);
+    // copy data into packet
+    packet(fragment frag);
+    // zero-copy single fragment
+    packet(fragment frag, deleter del);
+    // zero-copy multiple fragments
+    packet(std::vector<fragment> frag, deleter del);
+    // build packet with iterator
+    template <typename Iterator>
+    packet(Iterator begin, Iterator end, deleter del);
+    // append fragment (copying new fragment)
+    packet(packet&& x, fragment frag);
+    // prepend fragment (copying new fragment, with header optimization)
+    packet(fragment frag, packet&& x);
+    // prepend fragment (zero-copy)
+    packet(fragment frag, deleter del, packet&& x);
+    // append fragment (zero-copy)
+    packet(packet&& x, fragment frag, deleter d);
+    // append temporary_buffer (zero-copy)
+    packet(packet&& x, temporary_buffer<char> buf);
+    // create from temporary_buffer (zero-copy)
+    packet(temporary_buffer<char> buf);
+    // append deleter
+    packet(packet&& x, deleter d);
+
+    packet& operator=(packet&& x) {
+        if (this != &x) {
+            this->~packet();
+            new (this) packet(std::move(x));
+        }
+        return *this;
+    }
+
+    unsigned len() const { return _impl->_len; }
+    unsigned memory() const { return len() +  sizeof(packet::impl); }
+
+    fragment frag(unsigned idx) const { return _impl->_frags[idx]; }
+    fragment& frag(unsigned idx) { return _impl->_frags[idx]; }
+
+    unsigned nr_frags() const { return _impl->_nr_frags; }
+    pseudo_vector fragments() const { return { _impl->_frags, _impl->_nr_frags }; }
+    fragment* fragment_array() const { return _impl->_frags; }
+
+    // share packet data (reference counted, non COW)
+    packet share();
+    packet share(size_t offset, size_t len);
+
+    void append(packet&& p);
+
+    void trim_front(size_t how_much);
+    void trim_back(size_t how_much);
+
+    // get a header pointer, linearizing if necessary
+    template <typename Header>
+    Header* get_header(size_t offset = 0);
+
+    // get a header pointer, linearizing if necessary
+    char* get_header(size_t offset, size_t size);
+
+    // prepend a header (default-initializing it)
+    template <typename Header>
+    Header* prepend_header(size_t extra_size = 0);
+
+    // prepend a header (uninitialized!)
+    char* prepend_uninitialized_header(size_t size);
+
+    packet free_on_cpu(unsigned cpu, std::function<void()> cb = []{});
+
+    void linearize() { return linearize(0, len()); }
+
+    void reset() { _impl.reset(); }
+
+    void reserve(int n_frags) {
+        if (n_frags > _impl->_nr_frags) {
+            auto extra = n_frags - _impl->_nr_frags;
+            _impl = impl::allocate_if_needed(std::move(_impl), extra);
+        }
+    }
+    std::optional<uint32_t> rss_hash() {
+        return _impl->_rss_hash;
+    }
+    std::optional<uint32_t> set_rss_hash(uint32_t hash) {
+        return _impl->_rss_hash = hash;
+    }
+    // Call `func` for each fragment, avoiding data copies when possible
+    // `func` is called with a temporary_buffer<char> parameter
+    template <typename Func>
+    void release_into(Func&& func) {
+        unsigned idx = 0;
+        if (_impl->using_internal_data()) {
+            auto&& f = frag(idx++);
+            func(temporary_buffer<char>(f.base, f.size));
+        }
+        while (idx < nr_frags()) {
+            auto&& f = frag(idx++);
+            func(temporary_buffer<char>(f.base, f.size, _impl->_deleter.share()));
+        }
+    }
+    std::vector<temporary_buffer<char>> release() {
+        std::vector<temporary_buffer<char>> ret;
+        ret.reserve(_impl->_nr_frags);
+        release_into([&ret] (temporary_buffer<char>&& frag) {
+            ret.push_back(std::move(frag));
+        });
+        return ret;
+    }
+    explicit operator bool() {
+        return bool(_impl);
+    }
+    static packet make_null_packet() {
+        return net::packet(nullptr);
+    }
+private:
+    void linearize(size_t at_frag, size_t desired_size);
+    bool allocate_headroom(size_t size);
+public:
+    class offload_info offload_info() const { return _impl->_offload_info; }
+    class offload_info& offload_info_ref() { return _impl->_offload_info; }
+    void set_offload_info(class offload_info oi) { _impl->_offload_info = oi; }
+};
+
+std::ostream& operator<<(std::ostream& os, const packet& p);
+
+inline
+packet::packet(packet&& x) noexcept
+    : _impl(std::move(x._impl)) {
+}
+
+inline
+packet::impl::impl(size_t nr_frags)
+    : _len(0), _allocated_frags(nr_frags) {
+}
+
+inline
+packet::impl::impl(fragment frag, size_t nr_frags)
+    : _len(frag.size), _allocated_frags(nr_frags) {
+    assert(_allocated_frags > _nr_frags);
+    if (frag.size <= internal_data_size) {
+        _headroom -= frag.size;
+        _frags[0] = { _data + _headroom, frag.size };
+    } else {
+        auto buf = static_cast<char*>(::malloc(frag.size));
+        if (!buf) {
+            throw std::bad_alloc();
+        }
+        deleter d = make_free_deleter(buf);
+        _frags[0] = { buf, frag.size };
+        _deleter.append(std::move(d));
+    }
+    std::copy(frag.base, frag.base + frag.size, _frags[0].base);
+    ++_nr_frags;
+}
+
+inline
+packet::packet()
+    : _impl(impl::allocate(1)) {
+}
+
+inline
+packet::packet(size_t nr_frags)
+    : _impl(impl::allocate(nr_frags)) {
+}
+
+inline
+packet::packet(fragment frag) : _impl(new impl(frag)) {
+}
+
+inline
+packet::packet(const char* data, size_t size) : packet(fragment{const_cast<char*>(data), size}) {
+}
+
+inline
+packet::packet(fragment frag, deleter d)
+    : _impl(impl::allocate(1)) {
+    _impl->_deleter = std::move(d);
+    _impl->_frags[_impl->_nr_frags++] = frag;
+    _impl->_len = frag.size;
+}
+
+inline
+packet::packet(std::vector<fragment> frag, deleter d)
+    : _impl(impl::allocate(frag.size())) {
+    _impl->_deleter = std::move(d);
+    std::copy(frag.begin(), frag.end(), _impl->_frags);
+    _impl->_nr_frags = frag.size();
+    _impl->_len = 0;
+    for (auto&& f : _impl->fragments()) {
+        _impl->_len += f.size;
+    }
+}
+
+template <typename Iterator>
+inline
+packet::packet(Iterator begin, Iterator end, deleter del) {
+    unsigned nr_frags = 0, len = 0;
+    nr_frags = std::distance(begin, end);
+    std::for_each(begin, end, [&] (const fragment& frag) { len += frag.size; });
+    _impl = impl::allocate(nr_frags);
+    _impl->_deleter = std::move(del);
+    _impl->_len = len;
+    _impl->_nr_frags = nr_frags;
+    std::copy(begin, end, _impl->_frags);
+}
+
+inline
+packet::packet(packet&& x, fragment frag)
+    : _impl(impl::allocate_if_needed(std::move(x._impl), 1)) {
+    _impl->_len += frag.size;
+    std::unique_ptr<char[]> buf(new char[frag.size]);
+    std::copy(frag.base, frag.base + frag.size, buf.get());
+    _impl->_frags[_impl->_nr_frags++] = {buf.get(), frag.size};
+    _impl->_deleter = make_deleter(std::move(_impl->_deleter), [buf = buf.release()] {
+        delete[] buf;
+    });
+}
+
+inline
+bool
+packet::allocate_headroom(size_t size) {
+    if (_impl->_headroom >= size) {
+        _impl->_len += size;
+        if (!_impl->using_internal_data()) {
+            _impl = impl::allocate_if_needed(std::move(_impl), 1);
+            std::copy_backward(_impl->_frags, _impl->_frags + _impl->_nr_frags,
+                    _impl->_frags + _impl->_nr_frags + 1);
+            _impl->_frags[0] = { _impl->_data + internal_data_size, 0 };
+            ++_impl->_nr_frags;
+        }
+        _impl->_headroom -= size;
+        _impl->_frags[0].base -= size;
+        _impl->_frags[0].size += size;
+        return true;
+    } else {
+        return false;
+    }
+}
+
+
+inline
+packet::packet(fragment frag, packet&& x)
+    : _impl(std::move(x._impl)) {
+    // try to prepend into existing internal fragment
+    if (allocate_headroom(frag.size)) {
+        std::copy(frag.base, frag.base + frag.size, _impl->_frags[0].base);
+        return;
+    } else {
+        // didn't work out, allocate and copy
+        _impl->unuse_internal_data();
+        _impl = impl::allocate_if_needed(std::move(_impl), 1);
+        _impl->_len += frag.size;
+        std::unique_ptr<char[]> buf(new char[frag.size]);
+        std::copy(frag.base, frag.base + frag.size, buf.get());
+        std::copy_backward(_impl->_frags, _impl->_frags + _impl->_nr_frags,
+                _impl->_frags + _impl->_nr_frags + 1);
+        ++_impl->_nr_frags;
+        _impl->_frags[0] = {buf.get(), frag.size};
+        _impl->_deleter = make_deleter(std::move(_impl->_deleter),
+                [buf = std::move(buf)] {});
+    }
+}
+
+inline
+packet::packet(packet&& x, fragment frag, deleter d)
+    : _impl(impl::allocate_if_needed(std::move(x._impl), 1)) {
+    _impl->_len += frag.size;
+    _impl->_frags[_impl->_nr_frags++] = frag;
+    d.append(std::move(_impl->_deleter));
+    _impl->_deleter = std::move(d);
+}
+
+inline
+packet::packet(packet&& x, deleter d)
+    : _impl(std::move(x._impl)) {
+    _impl->_deleter.append(std::move(d));
+}
+
+inline
+packet::packet(packet&& x, temporary_buffer<char> buf)
+    : packet(std::move(x), fragment{buf.get_write(), buf.size()}, buf.release()) {
+}
+
+inline
+packet::packet(temporary_buffer<char> buf)
+    : packet(fragment{buf.get_write(), buf.size()}, buf.release()) {}
+
+inline
+void packet::append(packet&& p) {
+    if (!_impl->_len) {
+        *this = std::move(p);
+        return;
+    }
+    _impl = impl::allocate_if_needed(std::move(_impl), p._impl->_nr_frags);
+    _impl->_len += p._impl->_len;
+    p._impl->unuse_internal_data();
+    std::copy(p._impl->_frags, p._impl->_frags + p._impl->_nr_frags,
+            _impl->_frags + _impl->_nr_frags);
+    _impl->_nr_frags += p._impl->_nr_frags;
+    p._impl->_deleter.append(std::move(_impl->_deleter));
+    _impl->_deleter = std::move(p._impl->_deleter);
+}
+
+inline
+char* packet::get_header(size_t offset, size_t size) {
+    if (offset + size > _impl->_len) {
+        return nullptr;
+    }
+    size_t i = 0;
+    while (i != _impl->_nr_frags && offset >= _impl->_frags[i].size) {
+        offset -= _impl->_frags[i++].size;
+    }
+    if (i == _impl->_nr_frags) {
+        return nullptr;
+    }
+    if (offset + size > _impl->_frags[i].size) {
+        linearize(i, offset + size);
+    }
+    return _impl->_frags[i].base + offset;
+}
+
+template <typename Header>
+inline
+Header* packet::get_header(size_t offset) {
+    return reinterpret_cast<Header*>(get_header(offset, sizeof(Header)));
+}
+
+inline
+void packet::trim_front(size_t how_much) {
+    assert(how_much <= _impl->_len);
+    _impl->_len -= how_much;
+    size_t i = 0;
+    while (how_much && how_much >= _impl->_frags[i].size) {
+        how_much -= _impl->_frags[i++].size;
+    }
+    std::copy(_impl->_frags + i, _impl->_frags + _impl->_nr_frags, _impl->_frags);
+    _impl->_nr_frags -= i;
+    if (!_impl->using_internal_data()) {
+        _impl->_headroom = internal_data_size;
+    }
+    if (how_much) {
+        if (_impl->using_internal_data()) {
+            _impl->_headroom += how_much;
+        }
+        _impl->_frags[0].base += how_much;
+        _impl->_frags[0].size -= how_much;
+    }
+}
+
+inline
+void packet::trim_back(size_t how_much) {
+    assert(how_much <= _impl->_len);
+    _impl->_len -= how_much;
+    size_t i = _impl->_nr_frags - 1;
+    while (how_much && how_much >= _impl->_frags[i].size) {
+        how_much -= _impl->_frags[i--].size;
+    }
+    _impl->_nr_frags = i + 1;
+    if (how_much) {
+        _impl->_frags[i].size -= how_much;
+        if (i == 0 && _impl->using_internal_data()) {
+            _impl->_headroom += how_much;
+        }
+    }
+}
+
+template <typename Header>
+Header*
+packet::prepend_header(size_t extra_size) {
+    auto h = prepend_uninitialized_header(sizeof(Header) + extra_size);
+    return new (h) Header{};
+}
+
+// prepend a header (uninitialized!)
+inline
+char* packet::prepend_uninitialized_header(size_t size) {
+    if (!allocate_headroom(size)) {
+        // didn't work out, allocate and copy
+        _impl->unuse_internal_data();
+        // try again, after unuse_internal_data we may have space after all
+        if (!allocate_headroom(size)) {
+            // failed
+            _impl->_len += size;
+            _impl = impl::allocate_if_needed(std::move(_impl), 1);
+            std::unique_ptr<char[]> buf(new char[size]);
+            std::copy_backward(_impl->_frags, _impl->_frags + _impl->_nr_frags,
+                    _impl->_frags + _impl->_nr_frags + 1);
+            ++_impl->_nr_frags;
+            _impl->_frags[0] = {buf.get(), size};
+            _impl->_deleter = make_deleter(std::move(_impl->_deleter),
+                    [buf = std::move(buf)] {});
+        }
+    }
+    return _impl->_frags[0].base;
+}
+
+inline
+packet packet::share() {
+    return share(0, _impl->_len);
+}
+
+inline
+packet packet::share(size_t offset, size_t len) {
+    _impl->unuse_internal_data(); // FIXME: eliminate?
+    packet n;
+    n._impl = impl::allocate_if_needed(std::move(n._impl), _impl->_nr_frags);
+    size_t idx = 0;
+    while (offset > 0 && offset >= _impl->_frags[idx].size) {
+        offset -= _impl->_frags[idx++].size;
+    }
+    while (n._impl->_len < len) {
+        auto& f = _impl->_frags[idx++];
+        auto fsize = std::min(len - n._impl->_len, f.size - offset);
+        n._impl->_frags[n._impl->_nr_frags++] = { f.base + offset, fsize };
+        n._impl->_len += fsize;
+        offset = 0;
+    }
+    n._impl->_offload_info = _impl->_offload_info;
+    assert(!n._impl->_deleter);
+    n._impl->_deleter = _impl->_deleter.share();
+    return n;
+}
+
+}
+
 
 
 class file_desc {
@@ -2562,800 +3514,6 @@ public:
     }
 };
 
-
-
-/*----------------------------metrics---------------------------------------*/
-
-// namespace metrics {
-// struct histogram_bucket {
-//     uint64_t count = 0; // number of events.
-//     double upper_bound = 0;      // Inclusive.
-// };
-
-// struct histogram {
-//     uint64_t sample_count = 0;
-//     double sample_sum = 0;
-//     std::vector<histogram_bucket> buckets; // Ordered in increasing order of upper_bound, +Inf bucket is optional.
-//     histogram& operator+=(const histogram& h);
-//     histogram operator+(const histogram& h) const;
-//     histogram operator+(histogram&& h) const;
-// };
-// }
-// #include <boost/variant.hpp>
-
-// namespace metrics {
-// namespace impl {
-// class metric_groups_def;
-// struct metric_definition_impl;
-// class metric_groups_impl;
-// }
-
-// using group_name_type = std::string; 
-// class metric_groups;
-
-// class metric_definition {
-//     std::unique_ptr<impl::metric_definition_impl> _impl;
-// public:
-//     metric_definition(const impl::metric_definition_impl& impl) noexcept;
-//     metric_definition(metric_definition&& m) noexcept;
-//     ~metric_definition();
-//     friend metric_groups;
-//     friend impl::metric_groups_impl;
-// };
-// class metric_group_definition {
-// public:
-//     group_name_type name;
-//     std::initializer_list<metric_definition> metrics;
-//     metric_group_definition(const group_name_type& name, std::initializer_list<metric_definition> l);
-//     metric_group_definition(const metric_group_definition&) = delete;
-//     ~metric_group_definition();
-// };
-
-// class metric_groups {
-//     std::unique_ptr<impl::metric_groups_def> _impl;
-// public:
-//     metric_groups() noexcept;
-//     metric_groups(metric_groups&&) = default;
-//     virtual ~metric_groups();
-//     metric_groups& operator=(metric_groups&&) = default;
-//     metric_groups(std::initializer_list<metric_group_definition> mg);
-//     metric_groups& add_group(const group_name_type& name, const std::initializer_list<metric_definition>& l);
-//     void clear();
-// };
-
-
-// class metric_group : public metric_groups {
-// public:
-//     metric_group() noexcept;
-//     metric_group(const metric_group&) = delete;
-//     metric_group(metric_group&&) = default;
-//     virtual ~metric_group();
-//     metric_group& operator=(metric_group&&) = default;
-//     /*!
-//      * \brief add metrics belong to the same group in the constructor.
-//      *
-//      *
-//      */
-//     metric_group(const group_name_type& name, std::initializer_list<metric_definition> l);
-// };
-// }
-
-// namespace metrics {
-
-// using metric_type_def = std::string;
-// using metric_name_type = std::string; 
-// using instance_id_type = std::string; 
-
-
-// class description {
-// public:
-//     description(std::string s) : _s(std::move(s))
-//     {}
-//     const std::string& str() const {
-//         return _s;
-//     }
-// private:
-//     std::string _s;
-// };//这个地方有问题
-
-// class label_instance {
-//     std::string _key;
-//     std::string _value;
-// public:
-//     template<typename T>
-//     label_instance(const std::string& key, T v) : _key(key), _value(boost::lexical_cast<std::string>(v)){}
-
-//     const std::string key() const {
-//         return _key;
-//     }
-//     const std::string value() const {
-//         return _value;
-//     }
-//     bool operator<(const label_instance&) const;
-//     bool operator==(const label_instance&) const;
-//     bool operator!=(const label_instance&) const;
-// };
-
-// class label {
-//     std::string key;
-// public:
-//     using instance = label_instance;
-//     explicit label(const std::string& key) : key(key) {
-//     }
-//     template<typename T>
-//     instance operator()(T value) const {
-//         return label_instance(key, std::forward<T>(value));
-//     }
-//     const std::string& name() const {
-//         return key;
-//     }
-// };
-
-// namespace impl {
-// // The value binding data types
-// enum class data_type : uint8_t {
-//     COUNTER, // unsigned int 64
-//     GAUGE, // double
-//     DERIVE, // signed int 64
-//     ABSOLUTE, // unsigned int 64
-//     HISTOGRAM,
-// };
-// /*!
-//  * \breif A helper class that used to return metrics value.
-//  * Do not use directly @see metrics_creation
-//  */
-// struct metric_value {
-//     boost::variant<double, histogram> u;
-//     data_type _type;
-//     data_type type() const {
-//         return _type;
-//     }
-//     double d() const {
-//         return boost::get<double>(u);
-//     }
-//     uint64_t ui() const {
-//         return boost::get<double>(u);
-//     }
-
-//     int64_t i() const {
-//         return boost::get<double>(u);
-//     }
-
-//     metric_value()
-//             : _type(data_type::GAUGE) {
-//     }
-
-//     metric_value(histogram&& h, data_type t = data_type::HISTOGRAM) :
-//         u(std::move(h)), _type(t) {
-//     }
-//     metric_value(const histogram& h, data_type t = data_type::HISTOGRAM) :
-//         u(h), _type(t) {
-//     }
-
-//     metric_value(double d, data_type t)
-//             : u(d), _type(t) {
-//     }
-
-//     metric_value& operator=(const metric_value& c) = default;
-
-//     metric_value& operator+=(const metric_value& c) {
-//         *this = *this + c;
-//         return *this;
-//     }
-
-//     metric_value operator+(const metric_value& c);
-//     const histogram& get_histogram() const {
-//         return boost::get<histogram>(u);
-//     }
-// };
-
-// using metric_function = std::function<metric_value()>;
-
-// struct metric_type {
-//     data_type base_type;
-//     metric_type_def type_name;
-// };
-
-// struct metric_definition_impl {
-//     metric_name_type name;
-//     metric_type type;
-//     metric_function f;
-//     description d;
-//     bool enabled = true;
-//     std::map<std::string, std::string> labels;
-//     metric_definition_impl& operator ()(bool enabled);
-//     metric_definition_impl& operator ()(const label_instance& label);
-//     metric_definition_impl(
-//         metric_name_type name,
-//         metric_type type,
-//         metric_function f,
-//         description d,
-//         std::vector<label_instance> labels);
-// };
-
-// class metric_groups_def {
-// public:
-//     metric_groups_def() = default;
-//     virtual ~metric_groups_def() = default;
-//     metric_groups_def(const metric_groups_def&) = delete;
-//     metric_groups_def(metric_groups_def&&) = default;
-//     virtual metric_groups_def& add_metric(group_name_type name, const metric_definition& md) = 0;
-//     virtual metric_groups_def& add_group(group_name_type name, const std::initializer_list<metric_definition>& l) = 0;
-//     virtual metric_groups_def& add_group(group_name_type name, const std::vector<metric_definition>& l) = 0;
-// };
-
-// instance_id_type shard();
-
-// template<typename T, typename En = std::true_type>
-// struct is_callable;
-
-// template<typename T>
-// struct is_callable<T, typename std::integral_constant<bool, !std::is_void<typename std::result_of<T()>::type>::value>::type> : public std::true_type {
-// };
-
-// template<typename T>
-// struct is_callable<T, typename std::enable_if<std::is_fundamental<T>::value, std::true_type>::type> : public std::false_type {
-// };
-
-// template<typename T, typename = std::enable_if_t<is_callable<T>::value>>
-// metric_function make_function(T val, data_type dt) {
-//     return [dt, val] {
-//         return metric_value(val(), dt);
-//     };
-// }
-
-// template<typename T, typename = std::enable_if_t<!is_callable<T>::value>>
-// metric_function make_function(T& val, data_type dt) {
-//     return [dt, &val] {
-//         return metric_value(val, dt);
-//     };
-// }
-// }
-
-// extern const bool metric_disabled;
-
-// extern label shard_label;
-// extern label type_label;
-
-// template<typename T>
-// impl::metric_definition_impl make_gauge(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {}) {
-//     return {name, {impl::data_type::GAUGE, "gauge"}, make_function(std::forward<T>(val), impl::data_type::GAUGE), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_gauge(metric_name_type name,
-//         description d, T&& val) {
-//     return {name, {impl::data_type::GAUGE, "gauge"}, make_function(std::forward<T>(val), impl::data_type::GAUGE), d, {}};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_gauge(metric_name_type name,
-//         description d, std::vector<label_instance> labels, T&& val) {
-//     return {name, {impl::data_type::GAUGE, "gauge"}, make_function(std::forward<T>(val), impl::data_type::GAUGE), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_derive(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {}) {
-//     return {name, {impl::data_type::DERIVE, "derive"}, make_function(std::forward<T>(val), impl::data_type::DERIVE), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_derive(metric_name_type name, description d,
-//         T&& val) {
-//     return {name, {impl::data_type::DERIVE, "derive"}, make_function(std::forward<T>(val), impl::data_type::DERIVE), d, {}};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_derive(metric_name_type name, description d, std::vector<label_instance> labels,
-//         T&& val) {
-//     return {name, {impl::data_type::DERIVE, "derive"}, make_function(std::forward<T>(val), impl::data_type::DERIVE), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_counter(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {}) {
-//     return {name, {impl::data_type::COUNTER, "counter"}, make_function(std::forward<T>(val), impl::data_type::COUNTER), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_absolute(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {}) {
-//     return {name, {impl::data_type::ABSOLUTE, "absolute"}, make_function(std::forward<T>(val), impl::data_type::ABSOLUTE), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_histogram(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {}) {
-//     return  {name, {impl::data_type::HISTOGRAM, "histogram"}, make_function(std::forward<T>(val), impl::data_type::HISTOGRAM), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_histogram(metric_name_type name,
-//         description d, std::vector<label_instance> labels, T&& val) {
-//     return  {name, {impl::data_type::HISTOGRAM, "histogram"}, make_function(std::forward<T>(val), impl::data_type::HISTOGRAM), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_histogram(metric_name_type name,
-//         description d, T&& val) {
-//     return  {name, {impl::data_type::HISTOGRAM, "histogram"}, make_function(std::forward<T>(val), impl::data_type::HISTOGRAM), d, {}};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_total_bytes(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {},
-//         instance_id_type instance = impl::shard()) {
-//     return make_derive(name, std::forward<T>(val), d, labels)(type_label("total_bytes"));
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_current_bytes(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {},
-//         instance_id_type instance = impl::shard()) {
-//     return make_derive(name, std::forward<T>(val), d, labels)(type_label("bytes"));
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_queue_length(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {},
-//         instance_id_type instance = impl::shard()) {
-//     return make_gauge(name, std::forward<T>(val), d, labels)(type_label("queue_length"));
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_total_operations(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {},
-//         instance_id_type instance = impl::shard()) {
-//     return make_derive(name, std::forward<T>(val), d, labels)(type_label("total_operations"));
-// }
-// }
-
-// namespace metrics {
-// namespace impl {
-//     using labels_type = std::map<std::string, std::string>;
-// }
-// }
-
-// namespace std {
-
-// template<>
-// struct hash<metrics::impl::labels_type> {
-//     using argument_type = metrics::impl::labels_type;
-//     using result_type = ::std::size_t;
-//     result_type operator()(argument_type const& s) const {
-//         result_type h = 0;
-//         for (auto&& i : s) {
-//             boost::hash_combine(h, std::hash<std::string>{}(i.second));
-//         }
-//         return h;
-//     }
-// };
-
-// }
-
-// namespace metrics {
-// namespace impl {
-
-// class metric_id {
-// public:
-//     metric_id() = default;
-//     metric_id(group_name_type group, metric_name_type name,
-//                     labels_type labels = {})
-//                     : _group(std::move(group)), _name(
-//                                     std::move(name)), _labels(labels) {
-//     }
-
-//     metric_id(metric_id &&) = default;
-//     metric_id(const metric_id &) = default;
-//     metric_id & operator=(metric_id &&) = default;
-//     metric_id & operator=(const metric_id &) = default;
-//  void unregister_metric(const metric_id & id);
-//     const group_name_type & group_name() const {
-//         return _group;
-//     }
-
-//     void group_name(const group_name_type & name) {
-//         _group = name;
-//     }
-
-//     const instance_id_type & instance_id() const {
-//         return _labels.at(shard_label.name());
-//     }
-//     const metric_name_type & name() const {
-//         return _name;
-//     }
-//     const metrics::metric_type_def & inherit_type() const {
-//         return _labels.at(type_label.name());
-//     }
-//     const labels_type& labels() const {
-//         return _labels;
-//     }
-//     std::string full_name() const;
-//     bool operator<(const metric_id&) const;
-//     bool operator==(const metric_id&) const;
-// private:
-//     auto as_tuple() const {
-//         return std::tie(group_name(), instance_id(), name(),
-//                     inherit_type(), labels());
-//     }
-//     group_name_type _group;
-//     metric_name_type _name;
-//     labels_type _labels;
-// };
-// }
-
-
-// using metrics_registration = std::vector<metric_id>;
-
-// class metric_groups_impl : public metric_groups_def {
-//     metrics_registration _registration;
-// public:
-//     metric_groups_impl() = default;
-//     ~metric_groups_impl();
-//     metric_groups_impl(const metric_groups_impl&) = delete;
-//     metric_groups_impl(metric_groups_impl&&) = default;
-//     metric_groups_impl& add_metric(group_name_type name, const metric_definition& md);
-//     metric_groups_impl& add_group(group_name_type name, const std::initializer_list<metric_definition>& l);
-//     metric_groups_impl& add_group(group_name_type name, const std::vector<metric_definition>& l);
-// };
-
-// class impl;
-// class registered_metric {
-//     data_type _type;
-//     description _d;
-//     bool _enabled;
-//     metric_function _f;
-//     shared_ptr<impl> _impl;
-//     metric_id _id;
-// public:
-//     registered_metric(metric_id id, data_type type, metric_function f, description d = description(), bool enabled=true);
-//     virtual ~registered_metric() {}
-//     virtual metric_value operator()() const {
-//         return _f();
-//     }
-//     data_type get_type() const {
-//         return _type;
-//     }
-
-//     bool is_enabled() const {
-//         return _enabled;
-//     }
-
-//     void set_enabled(bool b) {
-//         _enabled = b;
-//     }
-
-//     const description& get_description() const {
-//         return _d;
-//     }
-
-//     const metric_id& get_id() const {
-//         return _id;
-//     }
-// };
-
-// /*!
-//  * \brief holds information that relevant to all metric instances
-//  */
-// struct metric_info {
-//     data_type type;
-// };
-
-// using register_ref = shared_ptr<registered_metric>;
-// using metric_instances = std::unordered_map<labels_type, register_ref>;
-
-// class metric_family {
-//     metric_instances _instances;
-//     metric_info _info;
-// public:
-//     using iterator = metric_instances::iterator;
-//     using const_iterator = metric_instances::const_iterator;
-
-//     metric_family() = default;
-//     metric_family(const metric_family&) = default;
-//     metric_family(const metric_instances& instances) : _instances(instances) {
-//     }
-//     metric_family(const metric_instances& instances, const metric_info& info) : _instances(instances), _info(info) {
-//     }
-//     metric_family(metric_instances&& instances, metric_info&& info) : _instances(std::move(instances)), _info(std::move(info)) {
-//     }
-//     metric_family(metric_instances&& instances) : _instances(std::move(instances)) {
-//     }
-
-//     register_ref& operator[](const labels_type& l) {
-//         return _instances[l];
-//     }
-
-//     const register_ref& at(const labels_type& l) const {
-//         return _instances.at(l);
-//     }
-
-//     metric_info& info() {
-//         return _info;
-//     }
-
-//     const metric_info& info() const {
-//         return _info;
-//     }
-
-//     iterator find(const labels_type& l) {
-//         return _instances.find(l);
-//     }
-
-//     const_iterator find(const labels_type& l) const {
-//         return _instances.find(l);
-//     }
-
-//     iterator begin() {
-//         return _instances.begin();
-//     }
-
-//     const_iterator begin() const {
-//         return _instances.cbegin();
-//     }
-
-//     iterator end() {
-//         return _instances.end();
-//     }
-
-//     bool empty() const {
-//         return _instances.empty();
-//     }
-
-//     iterator erase(const_iterator position) {
-//         return _instances.erase(position);
-//     }
-
-//     const_iterator end() const {
-//         return _instances.cend();
-//     }
-// };
-
-// using value_map = std::unordered_map<std::string, metric_family>;
-// using value_holder = std::tuple<register_ref, metric_value>;
-// using value_vector = std::vector<value_holder>;
-// using values_copy = std::unordered_map<std::string, value_vector>;
-
-// struct config {
-//     std::string hostname;
-// };
-// class impl {
-//     value_map _value_map;
-//     config _config;
-// public:
-//     value_map& get_value_map() {
-//         return _value_map;
-//     }
-//     const value_map& get_value_map() const {
-//         return _value_map;
-//     }
-//     void add_registration(const metric_id& id, shared_ptr<registered_metric> rm);
-//     future<> stop() {
-//         return make_ready_future<>();
-//     }
-//     const config& get_config() const {
-//         return _config;
-//     }
-//     void set_config(const config& c) {
-//         _config = c;
-//     }
-// };
-// const value_map& get_value_map();
-// values_copy get_values();
-// shared_ptr<impl> get_local_impl();
-// void unregister_metric(const metric_id & id);
-
-// std::unique_ptr<metric_groups_def> create_metric_groups();
-
-// }
-
-// future<> configure(const boost::program_options::variables_map & opts);
-
-// /*!
-//  * \brief get the metrics configuration desciprtion
-//  */
-
-// boost::program_options::options_description get_options_description();
-
-// }
-
-
-// namespace std {
-
-// template<>
-// struct hash<metrics::impl::metric_id>{
-//     typedef metrics::impl::metric_id argument_type;
-//     typedef ::std::size_t result_type;
-//     result_type operator()(argument_type const& s) const
-//     {
-//         result_type const h1 ( std::hash<std::string>{}(s.group_name()) );
-//         result_type const h2 ( std::hash<std::string>{}(s.instance_id()) );
-//         return h1 ^ (h2 << 1); // or use boost::hash_combine
-//     }
-// };
-
-// }
-
-// namespace metrics {
-// namespace impl {
-// using metrics_registration = std::vector<metric_id>;
-
-// class metric_groups_impl : public metric_groups_def {
-//     metrics_registration _registration;
-// public:
-//     metric_groups_impl() = default;
-//     ~metric_groups_impl();
-//     metric_groups_impl(const metric_groups_impl&) = delete;
-//     metric_groups_impl(metric_groups_impl&&) = default;
-//     metric_groups_impl& add_metric(group_name_type name, const metric_definition& md);
-//     metric_groups_impl& add_group(group_name_type name, const std::initializer_list<metric_definition>& l);
-//     metric_groups_impl& add_group(group_name_type name, const std::vector<metric_definition>& l);
-// };
-
-// class impl;
-// class registered_metric {
-//     data_type _type;
-//     description _d;
-//     bool _enabled;
-//     metric_function _f;
-//     shared_ptr<impl> _impl;
-//     metric_id _id;
-// public:
-//     registered_metric(metric_id id, data_type type, metric_function f, description d = description(), bool enabled=true);
-//     virtual ~registered_metric() {}
-//     virtual metric_value operator()() const {
-//         return _f();
-//     }
-//     data_type get_type() const {
-//         return _type;
-//     }
-
-//     bool is_enabled() const {
-//         return _enabled;
-//     }
-
-//     void set_enabled(bool b) {
-//         _enabled = b;
-//     }
-
-//     const description& get_description() const {
-//         return _d;
-//     }
-
-//     const metric_id& get_id() const {
-//         return _id;
-//     }
-// };
-
-// /*!
-//  * \brief holds information that relevant to all metric instances
-//  */
-// struct metric_info {
-//     data_type type;
-// };
-
-// using register_ref = shared_ptr<registered_metric>;
-// using metric_instances = std::unordered_map<labels_type, register_ref>;
-
-// class metric_family {
-//     metric_instances _instances;
-//     metric_info _info;
-// public:
-//     using iterator = metric_instances::iterator;
-//     using const_iterator = metric_instances::const_iterator;
-
-//     metric_family() = default;
-//     metric_family(const metric_family&) = default;
-//     metric_family(const metric_instances& instances) : _instances(instances) {
-//     }
-//     metric_family(const metric_instances& instances, const metric_info& info) : _instances(instances), _info(info) {
-//     }
-//     metric_family(metric_instances&& instances, metric_info&& info) : _instances(std::move(instances)), _info(std::move(info)) {
-//     }
-//     metric_family(metric_instances&& instances) : _instances(std::move(instances)) {
-//     }
-
-//     register_ref& operator[](const labels_type& l) {
-//         return _instances[l];
-//     }
-
-//     const register_ref& at(const labels_type& l) const {
-//         return _instances.at(l);
-//     }
-
-//     metric_info& info() {
-//         return _info;
-//     }
-
-//     const metric_info& info() const {
-//         return _info;
-//     }
-
-//     iterator find(const labels_type& l) {
-//         return _instances.find(l);
-//     }
-
-//     const_iterator find(const labels_type& l) const {
-//         return _instances.find(l);
-//     }
-
-//     iterator begin() {
-//         return _instances.begin();
-//     }
-
-//     const_iterator begin() const {
-//         return _instances.cbegin();
-//     }
-
-//     iterator end() {
-//         return _instances.end();
-//     }
-
-//     bool empty() const {
-//         return _instances.empty();
-//     }
-
-//     iterator erase(const_iterator position) {
-//         return _instances.erase(position);
-//     }
-
-//     const_iterator end() const {
-//         return _instances.cend();
-//     }
-// };
-
-// using value_map = std::unordered_map<std::string, metric_family>;
-// using value_holder = std::tuple<register_ref, metric_value>;
-// using value_vector = std::vector<value_holder>;
-// using values_copy = std::unordered_map<std::string, value_vector>;
-
-// struct config {
-//     std::string hostname;
-// };
-// class impl {
-//     value_map _value_map;
-//     config _config;
-// public:
-//     value_map& get_value_map() {
-//         return _value_map;
-//     }
-//     const value_map& get_value_map() const {
-//         return _value_map;
-//     }
-//     void add_registration(const metric_id& id, shared_ptr<registered_metric> rm);
-//     future<> stop() {
-//         return make_ready_future<>();
-//     }
-//     const config& get_config() const {
-//         return _config;
-//     }
-//     void set_config(const config& c) {
-//         _config = c;
-//     }
-// };
-// const value_map& get_value_map();
-// values_copy get_values();
-// shared_ptr<impl> get_local_impl();
-// void unregister_metric(const metric_id & id);
-
-// std::unique_ptr<metric_groups_def> create_metric_groups();
-
-// }
-
-// future<> configure(const boost::program_options::variables_map & opts);
-
-// /*!
-//  * \brief get the metrics configuration desciprtion
-//  */
-
-// boost::program_options::options_description get_options_description();
-
-// }
-
-
-
 class priority_class {
     struct request {
         promise<> pr;
@@ -3795,7 +3953,156 @@ struct pollfn {
         virtual void exit_interrupt_mode() {}
 };
 
+class reactor_notifier {
+public:
+    virtual future<> wait() = 0;
+    virtual void signal() = 0;
+    virtual ~reactor_notifier() {}
+};
 
+class syscall_work_queue {
+public:
+    static constexpr size_t queue_length = 128;
+    struct work_item;
+    using lf_queue = boost::lockfree::spsc_queue<work_item*,
+                            boost::lockfree::capacity<queue_length>>;
+    lf_queue _pending;
+    lf_queue _completed;
+    writeable_eventfd _start_eventfd;
+    semaphore _queue_has_room = { queue_length };
+    struct work_item {
+        virtual ~work_item() {}
+        virtual void process() = 0;
+        virtual void complete() = 0;
+    };
+    template <typename T, typename Func>
+    struct work_item_returning :  work_item {
+        Func _func;
+        promise<T> _promise;
+        boost::optional<T> _result;
+        work_item_returning(Func&& func) : _func(std::move(func)) {}
+        virtual void process() override { _result = this->_func(); }
+        virtual void complete() override { _promise.set_value(std::move(*_result)); }
+        future<T> get_future() { return _promise.get_future(); }
+    };
+public:
+    syscall_work_queue();
+    template <typename T, typename Func>
+    future<T> submit(Func func) {
+        auto wi = std::make_unique<work_item_returning<T, Func>>(std::move(func));
+        auto fut = wi->get_future();
+        submit_item(std::move(wi));
+        return fut;
+    }
+    void work();
+    // Scans the _completed queue, that contains the requests already handled by the syscall thread,
+    // effectively opening up space for more requests to be submitted. One consequence of this is
+    // that from the reactor's point of view, a request is not considered handled until it is
+    // removed from the _completed queue.
+    //
+    // Returns the number of requests handled.
+    unsigned complete();
+    void submit_item(std::unique_ptr<syscall_work_queue::work_item> wi);
+    friend class thread_pool;
+};
+
+class thread_pool {
+    uint64_t _aio_threaded_fallbacks = 0;
+    // FIXME: implement using reactor_notifier abstraction we used for SMP
+    syscall_work_queue inter_thread_wq;
+    posix_thread _worker_thread;
+    std::atomic<bool> _stopped = { false };
+    std::atomic<bool> _main_thread_idle = { false };
+    pthread_t _notify;
+public:
+    explicit thread_pool(std::string thread_name);
+    ~thread_pool();
+    template <typename T, typename Func>
+    future<T> submit(Func func) {
+        ++_aio_threaded_fallbacks;
+        return inter_thread_wq.submit<T>(std::move(func));
+    }
+    uint64_t operation_count() const { return _aio_threaded_fallbacks; }
+    unsigned complete() { return inter_thread_wq.complete(); }
+    // Before we enter interrupt mode, we must make sure that the syscall thread will properly
+    // generate signals to wake us up. This means we need to make sure that all modifications to
+    // the pending and completed fields in the inter_thread_wq are visible to all threads.
+    // Simple release-acquire won't do because we also need to serialize all writes that happens
+    // before the syscall thread loads this value, so we'll need full seq_cst.
+    void enter_interrupt_mode() { _main_thread_idle.store(true, std::memory_order_seq_cst); }
+    // When we exit interrupt mode, however, we can safely used relaxed order. If any reordering
+    // takes place, we'll get an extra signal and complete will be called one extra time, which is
+    // harmless.
+    void exit_interrupt_mode() { _main_thread_idle.store(false, std::memory_order_relaxed); }
+private:
+    void work(std::string thread_name);
+};
+
+
+
+class reactor_backend {
+public:
+    virtual ~reactor_backend() {};
+    // wait_and_process() waits for some events to become available, and
+    // processes one or more of them. If block==false, it doesn't wait,
+    // and just processes events that have already happened, if any.
+    // After the optional wait, just before processing the events, the
+    // pre_process() function is called.
+    virtual bool wait_and_process(int timeout = -1, const sigset_t* active_sigmask = nullptr) = 0;
+    // Methods that allow polling on file descriptors. This will only work on
+    // reactor_backend_epoll. Other reactor_backend will probably abort if
+    // they are called (which is fine if no file descriptors are waited on):
+    virtual future<> readable(pollable_fd_state& fd) = 0;
+    virtual future<> writeable(pollable_fd_state& fd) = 0;
+    virtual void forget(pollable_fd_state& fd) = 0;
+    // Methods that allow polling on a reactor_notifier. This is currently
+    // used only for reactor_backend_osv, but in the future it should really
+    // replace the above functions.
+    virtual future<> notified(reactor_notifier *n) = 0;
+    // Methods for allowing sending notifications events between threads.
+    virtual std::unique_ptr<reactor_notifier> make_reactor_notifier() = 0;
+};
+
+class reactor_backend_epoll : public reactor_backend {
+private:
+    file_desc _epollfd;
+    future<> get_epoll_future(pollable_fd_state& fd,
+            promise<> pollable_fd_state::* pr, int event);
+    void complete_epoll_event(pollable_fd_state& fd,
+            promise<> pollable_fd_state::* pr, int events, int event);
+    void abort_fd(pollable_fd_state& fd, std::exception_ptr ex,
+            promise<> pollable_fd_state::* pr, int event);
+public:
+    reactor_backend_epoll();
+    virtual ~reactor_backend_epoll() override { }
+    virtual bool wait_and_process(int timeout, const sigset_t* active_sigmask) override;
+    virtual future<> readable(pollable_fd_state& fd) override;
+    virtual future<> writeable(pollable_fd_state& fd) override;
+    virtual void forget(pollable_fd_state& fd) override;
+    virtual future<> notified(reactor_notifier *n) override;
+    virtual std::unique_ptr<reactor_notifier> make_reactor_notifier() override;
+    void abort_reader(pollable_fd_state& fd, std::exception_ptr ex);
+    void abort_writer(pollable_fd_state& fd, std::exception_ptr ex);
+};
+
+class reactor_notifier_epoll : public reactor_notifier {
+    writeable_eventfd _write;
+    readable_eventfd _read;
+public:
+    reactor_notifier_epoll()
+        : _write()
+        , _read(_write.read_side()) {
+    }
+    virtual future<> wait() override {
+        // convert _read.wait(), a future<size_t>, to a future<>:
+        return _read.wait().then([] (size_t ignore) {
+            return make_ready_future<>();
+        });
+    }
+    virtual void signal() override {
+        _write.signal(1);
+    }
+};
 
 
 struct reactor {
@@ -3900,6 +4207,7 @@ struct reactor {
     /*----------------------poller相关----------------------------------------------------*/
     std::vector<pollfn*> _pollers;
     thread_pool _thread_pool;
+        reactor_backend_epoll _backend;
     
     void unregister_poller(pollfn* p);
     void register_poller(pollfn* p);
@@ -3937,6 +4245,8 @@ struct reactor {
     bool poll_once();
     bool pure_poll_once();
     /*----------------------------------IO相关--------------------------------------------*/
+
+
     void start_aio_eventfd_loop();
     server_socket listen(socket_address sa, listen_options opts = {});
     future<connected_socket> connect(socket_address sa);
@@ -3961,6 +4271,9 @@ struct reactor {
     future<> remove_file(std::string pathname);
     future<> rename_file(std::string old_pathname, std::string new_pathname);
     future<> link_file(std::string oldpath, std::string newpath);
+    future<> writeable(pollable_fd_state& fd) {
+        return _backend.writeable(fd);
+    }
     // In the following three methods, prepare_io is not guaranteed to execute in the same processor
     // in which it was generated. Therefore, care must be taken to avoid the use of objects that could
     // be destroyed within or at exit of prepare_io.
@@ -4101,6 +4414,126 @@ public:
         _p = p;
     }
 };
+
+
+
+
+reactor_backend_epoll::reactor_backend_epoll()
+    : _epollfd(file_desc::epoll_create(EPOLL_CLOEXEC)) {
+}
+
+
+future<> reactor_backend_epoll::get_epoll_future(pollable_fd_state& pfd,
+        promise<> pollable_fd_state::*pr, int event) {
+    if (pfd.events_known & event) {
+        pfd.events_known &= ~event;
+        return make_ready_future();
+    }
+    pfd.events_requested |= event;
+    if (!(pfd.events_epoll & event)) {
+        auto ctl = pfd.events_epoll ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
+        pfd.events_epoll |= event;
+        ::epoll_event eevt;
+        eevt.events = pfd.events_epoll;
+        eevt.data.ptr = &pfd;
+        int r = ::epoll_ctl(_epollfd.get(), ctl, pfd.fd.get(), &eevt);
+        assert(r == 0);
+        engine().start_epoll();
+    }
+    pfd.*pr = promise<>();
+    return (pfd.*pr).get_future();
+}
+
+void reactor_backend_epoll::abort_fd(pollable_fd_state& pfd, std::exception_ptr ex,
+                                     promise<> pollable_fd_state::* pr, int event) {
+    if (pfd.events_epoll & event) {
+        pfd.events_epoll &= ~event;
+        auto ctl = pfd.events_epoll ? EPOLL_CTL_MOD : EPOLL_CTL_DEL;
+        ::epoll_event eevt;
+        eevt.events = pfd.events_epoll;
+        eevt.data.ptr = &pfd;
+        int r = ::epoll_ctl(_epollfd.get(), ctl, pfd.fd.get(), &eevt);
+        assert(r == 0);
+    }
+    if (pfd.events_requested & event) {
+        pfd.events_requested &= ~event;
+        (pfd.*pr).set_exception(std::move(ex));
+    }
+    pfd.events_known &= ~event;
+}
+
+future<> reactor_backend_epoll::readable(pollable_fd_state& fd) {
+    return get_epoll_future(fd, &pollable_fd_state::pollin, EPOLLIN);
+}
+
+future<> reactor_backend_epoll::writeable(pollable_fd_state& fd) {
+    return get_epoll_future(fd, &pollable_fd_state::pollout, EPOLLOUT);
+}
+
+void reactor_backend_epoll::abort_reader(pollable_fd_state& fd, std::exception_ptr ex) {
+    abort_fd(fd, std::move(ex), &pollable_fd_state::pollin, EPOLLIN);
+}
+
+void reactor_backend_epoll::abort_writer(pollable_fd_state& fd, std::exception_ptr ex) {
+    abort_fd(fd, std::move(ex), &pollable_fd_state::pollout, EPOLLOUT);
+}
+
+void reactor_backend_epoll::forget(pollable_fd_state& fd) {
+    if (fd.events_epoll) {
+        ::epoll_ctl(_epollfd.get(), EPOLL_CTL_DEL, fd.fd.get(), nullptr);
+    }
+}
+
+future<> reactor_backend_epoll::notified(reactor_notifier *n) {
+    // Currently reactor_backend_epoll doesn't need to support notifiers,
+    // because we add to it file descriptors instead. But this can be fixed
+    // later.
+    std::cout << "reactor_backend_epoll does not yet support notifiers!\n";
+    abort();
+}
+
+void reactor_backend_epoll::complete_epoll_event(pollable_fd_state& pfd, promise<> pollable_fd_state::*pr,
+        int events, int event) {
+    if (pfd.events_requested & events & event) {
+        pfd.events_requested &= ~event;
+        pfd.events_known &= ~event;
+        (pfd.*pr).set_value();
+        pfd.*pr = promise<>();
+    }
+}
+
+
+
+
+bool
+reactor_backend_epoll::wait_and_process(int timeout, const sigset_t* active_sigmask) {
+    std::array<epoll_event, 128> eevt;
+    int nr = ::epoll_pwait(_epollfd.get(), eevt.data(), eevt.size(), timeout, active_sigmask);
+    if (nr == -1 && errno == EINTR) {
+        return false; // gdb can cause this
+    }
+    assert(nr != -1);
+    for (int i = 0; i < nr; ++i) {
+        auto& evt = eevt[i];
+        auto pfd = reinterpret_cast<pollable_fd_state*>(evt.data.ptr);
+        auto events = evt.events & (EPOLLIN | EPOLLOUT);
+        auto events_to_remove = events & ~pfd->events_requested;
+        complete_epoll_event(*pfd, &pollable_fd_state::pollin, events, EPOLLIN);
+        complete_epoll_event(*pfd, &pollable_fd_state::pollout, events, EPOLLOUT);
+        if (events_to_remove) {
+            pfd->events_epoll &= ~events_to_remove;
+            evt.events = pfd->events_epoll;
+            auto op = evt.events ? EPOLL_CTL_MOD : EPOLL_CTL_DEL;
+            ::epoll_ctl(_epollfd.get(), op, pfd->fd.get(), &evt);
+        }
+    }
+    return nr;
+}
+
+std::unique_ptr<reactor_notifier> reactor_backend_epoll::make_reactor_notifier() {
+    return std::make_unique<reactor_notifier_epoll>();
+}
+
 
 class reactor::poller::deregistration_task : public task {
 private:
