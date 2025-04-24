@@ -49,6 +49,60 @@
 #include <sys/mman.h>
 #include "../util/align.hh"
 #include "../util/backtrace.hh"
+#include "../util/tuple_utils.hh"
+
+
+template<typename T>
+class reference_wrapper {
+    T* _pointer;
+    explicit reference_wrapper(T& object) noexcept:_pointer(&object){}
+    template<typename U>
+    friend reference_wrapper<U> ref(U&) noexcept;
+    template<typename U>
+    friend reference_wrapper<const U> cref(const U&) noexcept;
+public:
+    using type = T;
+    operator T&() const noexcept { return *_pointer; }
+    T& get() const noexcept { return *_pointer; }
+
+};
+
+
+inline
+size_t iovec_len(const iovec* begin, size_t len)
+{
+    size_t ret = 0;
+    auto end = begin + len;
+    while (begin != end) {
+        ret += begin++->iov_len;
+    }
+    return ret;
+}
+
+
+
+/// Wraps reference in a reference_wrapper
+template<typename T>
+inline reference_wrapper<T> ref(T& object) noexcept {
+    return reference_wrapper<T>(object);
+}
+/// Wraps constant reference in a reference_wrapper
+template<typename T>
+inline reference_wrapper<const T> cref(const T& object) noexcept {
+    return reference_wrapper<const T>(object);
+}
+
+
+
+
+
+
+
+
+
+
+
+
 
 #ifdef __cpp_concepts
 #define GCC6_CONCEPT(x...) x
@@ -65,6 +119,31 @@ inline bool need_preempt() {
     std::atomic_signal_fence(std::memory_order_seq_cst);
     return g_need_preempt;
 }
+
+
+void
+systemwide_memory_barrier() {
+    // FIXME: use sys_membarrier() when available
+    static thread_local char* mem = [] {
+       void* mem = mmap(nullptr, getpagesize(),
+               PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANONYMOUS,
+               -1, 0) ;
+       assert(mem != MAP_FAILED);
+       return reinterpret_cast<char*>(mem);
+    }();
+    int r1 = mprotect(mem, getpagesize(), PROT_READ | PROT_WRITE);
+    assert(r1 == 0);
+    // Force page into memory to avoid next mprotect() attempting to be clever
+    *mem = 3;
+    // Force page into memory
+    // lower permissions to force kernel to send IPI to all threads, with
+    // a side effect of executing a memory barrier on those threads
+    // FIXME: does this work on ARM?
+    int r2 = mprotect(mem, getpagesize(), PROT_READ);
+    assert(r2 == 0);
+}
+
 
 
 
@@ -2624,6 +2703,483 @@ class promise<void> : public promise<> {};
 
 
 
+namespace internal {
+
+// Execution wraps lreferences in reference_wrapper so that the caller is forced
+// to use seastar::ref(). Then when the function is actually called the
+// reference is unwrapped. However, we need to distinguish between functions
+// which argument is lvalue reference and functions that take
+// reference_wrapper<> as an argument and not unwrap the latter. To solve this
+// issue reference_wrapper_for_es type is used for wrappings done automatically
+// by execution stage.
+template<typename T>
+struct reference_wrapper_for_es : reference_wrapper<T> {
+    reference_wrapper_for_es(reference_wrapper <T> rw) noexcept
+        : reference_wrapper<T>(std::move(rw)) {}
+};
+
+template<typename T>
+struct wrap_for_es {
+    using type = T;
+};
+
+template<typename T>
+struct wrap_for_es<T&> {
+    using type = reference_wrapper_for_es<T>;
+};
+
+template<typename T>
+struct wrap_for_es<T&&> {
+    using type = T;
+};
+
+template<typename T>
+decltype(auto) unwrap_for_es(T&& object) {
+    return std::forward<T>(object);
+}
+
+template<typename T>
+std::reference_wrapper<T> unwrap_for_es(reference_wrapper_for_es<T> ref) {
+    return std::reference_wrapper<T>(ref.get());
+}
+
+}
+/// \endcond
+
+/// Base execution stage class
+class execution_stage {
+public:
+    struct stats {
+        uint64_t tasks_scheduled = 0;
+        uint64_t tasks_preempted = 0;
+        uint64_t function_calls_enqueued = 0;
+        uint64_t function_calls_executed = 0;
+    };
+protected:
+    bool _empty = true;
+    bool _flush_scheduled = false;
+    stats _stats;
+    sstring _name;
+    // metrics::metric_group _metric_group;
+protected:
+    virtual void do_flush() noexcept = 0;
+public:
+    explicit execution_stage(const sstring& name);
+    virtual ~execution_stage();
+
+    execution_stage(const execution_stage&) = delete;
+
+    /// Move constructor
+    ///
+    /// \warning It is illegal to move execution_stage after any operation has
+    /// been pushed to it. The only reason why the move constructor is not
+    /// deleted is the fact that C++14 does not guarantee return value
+    /// optimisation which is required by make_execution_stage().
+    execution_stage(execution_stage&&);
+
+    /// Returns execution stage name
+    const sstring& name() const noexcept { return _name; }
+
+    /// Returns execution stage usage statistics
+    const stats& get_stats() const noexcept { return _stats; }
+
+    /// Flushes execution stage
+    ///
+    /// Ensures that a task which would execute all queued operations is
+    /// scheduled. Does not schedule a new task if there is one already pending
+    /// or the queue is empty.
+    ///
+    /// \return true if a new task has been scheduled
+    bool flush() noexcept {
+        if (_empty || _flush_scheduled) {
+            return false;
+        }
+        _stats.tasks_scheduled++;
+        schedule_normal(make_task([this] {
+            do_flush();
+            _flush_scheduled = false;
+        }));
+        _flush_scheduled = true;
+        return true;
+    };
+
+    /// Checks whether there are pending operations.
+    ///
+    /// \return true if there is at least one queued operation
+    bool poll() const noexcept {
+        return !_empty;
+    }
+};
+/*----------------------------------execution_statge-----------------------------------------------------------------------------*/
+
+/// \cond internal
+namespace internal {
+
+class execution_stage_manager {
+    std::vector<execution_stage*> _execution_stages;
+    std::unordered_map<sstring, execution_stage*> _stages_by_name;
+private:
+    execution_stage_manager() = default;
+    execution_stage_manager(const execution_stage_manager&) = delete;
+    execution_stage_manager(execution_stage_manager&&) = delete;
+public:
+    void register_execution_stage(execution_stage& stage) {
+        auto ret = _stages_by_name.emplace(stage.name(), &stage);
+        if (!ret.second) {
+            throw std::runtime_error("error registering execution stage: name already in use");
+        }
+        try {
+            _execution_stages.push_back(&stage);
+        } catch (...) {
+            _stages_by_name.erase(stage.name());
+            throw;
+        }
+    }
+    void unregister_execution_stage(execution_stage& stage) noexcept {
+        auto it = std::find(_execution_stages.begin(), _execution_stages.end(), &stage);
+        _execution_stages.erase(it);
+        _stages_by_name.erase(stage.name());
+    }
+    void update_execution_stage_registration(execution_stage& old_es, execution_stage& new_es) noexcept {
+        auto it = std::find(_execution_stages.begin(), _execution_stages.end(), &old_es);
+        *it = &new_es;
+        _stages_by_name.find(new_es.name())->second = &new_es;
+    }
+
+    execution_stage* get_stage(const sstring& name) {
+        return _stages_by_name[name];
+    }
+
+    bool flush() noexcept {
+        bool did_work = false;
+        for (auto&& stage : _execution_stages) {
+            did_work |= stage->flush();
+        }
+        return did_work;
+    }
+    bool poll() const noexcept {
+        for (auto&& stage : _execution_stages) {
+            if (stage->poll()) {
+                return true;
+            }
+        }
+        return false;
+    }
+public:
+    static execution_stage_manager& get() noexcept {
+        static thread_local execution_stage_manager instance;
+        return instance;
+    }
+};
+
+}
+
+template<typename Function, typename ReturnType, typename ArgsTuple>
+GCC6_CONCEPT(requires std::is_nothrow_move_constructible<ArgsTuple>::value)
+class concrete_execution_stage final : public execution_stage {
+    static_assert(std::is_nothrow_move_constructible<ArgsTuple>::value,
+                  "Function arguments need to be nothrow move constructible");
+
+    static constexpr size_t flush_threshold = 128;
+
+    using return_type = futurize_t<ReturnType>;
+    using promise_type = typename return_type::promise_type;
+    using input_type = typename tuple_map_types<internal::wrap_for_es, ArgsTuple>::type;
+
+    struct work_item {
+        input_type _in;
+        promise_type _ready;
+
+        template<typename... Args>
+        work_item(Args&&... args) : _in(std::forward<Args>(args)...) { }
+
+        work_item(work_item&& other) = delete;
+        work_item(const work_item&) = delete;
+        work_item(work_item&) = delete;
+    };
+    std::deque<work_item> _queue;
+
+    Function _function;
+private:
+    auto unwrap(input_type&& in) {
+        return tuple_map(std::move(in), [] (auto&& obj) {
+            return internal::unwrap_for_es(std::forward<decltype(obj)>(obj));
+        });
+    }
+
+    virtual void do_flush() noexcept override {
+        while (!_queue.empty()) {
+            auto& wi = _queue.front();
+            futurize<ReturnType>::apply(_function, unwrap(std::move(wi._in))).forward_to(std::move(wi._ready));
+            _queue.pop_front();
+            _stats.function_calls_executed++;
+
+            if (need_preempt()) {
+                _stats.tasks_preempted++;
+                break;
+            }
+        }
+        _empty = _queue.empty();
+    }
+public:
+    explicit concrete_execution_stage(const sstring& name, Function f)
+        : execution_stage(name)
+        , _function(std::move(f)){
+        _queue.reserve(flush_threshold);
+    }
+    template<typename... Args>
+    GCC6_CONCEPT(requires std::is_constructible<input_type, Args...>::value)
+    return_type operator()(Args&&... args) {
+        _queue.emplace_back(std::forward<Args>(args)...);
+        _empty = false;
+        _stats.function_calls_enqueued++;
+        auto f = _queue.back()._ready.get_future();
+        if (_queue.size() > flush_threshold) {
+            flush();
+        }
+        return f;
+    }
+};
+
+
+template<typename Function>
+auto make_execution_stage(const sstring& name, Function&& fn) {
+    using traits = function_traits<Function>;
+    return concrete_execution_stage<std::decay_t<Function>, typename traits::return_type,
+                                    typename traits::args_as_tuple>(name, std::forward<Function>(fn));
+}
+template<typename Ret, typename Object, typename... Args>
+auto make_execution_stage(const sstring& name, Ret (Object::*fn)(Args...)) {
+    return concrete_execution_stage<decltype(std::mem_fn(fn)), Ret, std::tuple<Object*, Args...>>(name, std::mem_fn(fn));
+}
+
+template<typename Ret, typename Object, typename... Args>
+auto make_execution_stage(const sstring& name, Ret (Object::*fn)(Args...) const) {
+    return concrete_execution_stage<decltype(std::mem_fn(fn)), Ret, std::tuple<const Object*, Args...>>(name, std::mem_fn(fn));
+}
+
+/// @}
+
+inline execution_stage::execution_stage(const sstring& name):_name(name){
+    internal::execution_stage_manager::get().register_execution_stage(*this);
+    auto undo = defer([&] { internal::execution_stage_manager::get().unregister_execution_stage(*this); });
+    undo.cancel();
+}
+
+inline execution_stage::~execution_stage()
+{
+    internal::execution_stage_manager::get().unregister_execution_stage(*this);
+}
+
+inline execution_stage::execution_stage(execution_stage&& other)
+    : _stats(other._stats)
+    , _name(std::move(other._name)){
+        internal::execution_stage_manager::get().update_execution_stage_registration(other, *this);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+/*--------------------------------------------------------------------------------------------------------------------------------*/
+
+template <typename... T>
+class stream;
+
+template <typename... T>
+class subscription;
+
+template <typename... T>
+class stream {
+    subscription<T...>* _sub = nullptr;
+    promise<> _done;
+    promise<> _ready;
+public:
+    using next_fn = std::function<future<> (T...)>;
+    stream() = default;
+    stream(const stream&) = delete;
+    stream(stream&&) = delete;
+    ~stream();
+    void operator=(const stream&) = delete;
+    void operator=(stream&&) = delete;
+
+    // Returns a subscription that reads value from this
+    // stream.
+    subscription<T...> listen();
+
+    // Returns a subscription that reads value from this
+    // stream, and also sets up the listen function.
+    subscription<T...> listen(next_fn next);
+
+    // Becomes ready when the listener is ready to accept
+    // values.  Call only once, when beginning to produce
+    // values.
+    future<> started();
+
+    // Produce a value.  Call only after started(), and after
+    // a previous produce() is ready.
+    future<> produce(T... data);
+
+    // End the stream.   Call only after started(), and after
+    // a previous produce() is ready.  No functions may be called
+    // after this.
+    void close();
+
+    // Signal an error.   Call only after started(), and after
+    // a previous produce() is ready.  No functions may be called
+    // after this.
+    template <typename E>
+    void set_exception(E ex);
+private:
+    void pause(future<> can_continue);
+    void start();
+    friend class subscription<T...>;
+};
+
+template <typename... T>
+class subscription {
+public:
+    using next_fn = typename stream<T...>::next_fn;
+private:
+    stream<T...>* _stream;
+    next_fn _next;
+private:
+    explicit subscription(stream<T...>* s);
+public:
+    subscription(subscription&& x);
+    ~subscription();
+
+    /// \brief Start receiving events from the stream.
+    ///
+    /// \param next Callback to call for each event
+    void start(std::function<future<> (T...)> next);
+
+    // Becomes ready when the stream is empty, or when an error
+    // happens (in that case, an exception is held).
+    future<> done();
+
+    friend class stream<T...>;
+};
+
+
+template <typename... T>
+inline
+stream<T...>::~stream() {
+    if (_sub) {
+        _sub->_stream = nullptr;
+    }
+}
+
+template <typename... T>
+inline
+subscription<T...>
+stream<T...>::listen() {
+    return subscription<T...>(this);
+}
+
+template <typename... T>
+inline
+subscription<T...>
+stream<T...>::listen(next_fn next) {
+    auto sub = subscription<T...>(this);
+    sub.start(std::move(next));
+    return sub;
+}
+
+template <typename... T>
+inline
+future<>
+stream<T...>::started() {
+    return _ready.get_future();
+}
+
+template <typename... T>
+inline
+future<>
+stream<T...>::produce(T... data) {
+    auto ret = futurize<void>::apply(_sub->_next, std::move(data)...);
+    if (ret.available() && !ret.failed()) {
+        // Native network stack depends on stream::produce() returning
+        // a ready future to push packets along without dropping.  As
+        // a temporary workaround, special case a ready, unfailed future
+        // and return it immediately, so that then_wrapped(), below,
+        // doesn't convert a ready future to an unready one.
+        return ret;
+    }
+    return ret.then_wrapped([this] (auto&& f) {
+        try {
+            f.get();
+        } catch (...) {
+            _done.set_exception(std::current_exception());
+            // FIXME: tell the producer to stop producing
+            throw;
+        }
+    });
+}
+
+template <typename... T>
+inline
+void
+stream<T...>::close() {
+    _done.set_value();
+}
+
+template <typename... T>
+template <typename E>
+inline
+void
+stream<T...>::set_exception(E ex) {
+    _done.set_exception(ex);
+}
+
+template <typename... T>
+inline
+subscription<T...>::subscription(stream<T...>* s)
+        : _stream(s) {
+    assert(!_stream->_sub);
+    _stream->_sub = this;
+}
+
+template <typename... T>
+inline
+void
+subscription<T...>::start(std::function<future<> (T...)> next) {
+    _next = std::move(next);
+    _stream->_ready.set_value();
+}
+
+template <typename... T>
+inline
+subscription<T...>::~subscription() {
+    if (_stream) {
+        _stream->_sub = nullptr;
+    }
+}
+
+template <typename... T>
+inline
+subscription<T...>::subscription(subscription&& x)
+    : _stream(x._stream), _next(std::move(x._next)) {
+    x._stream = nullptr;
+    if (_stream) {
+        _stream->_sub = this;
+    }
+}
+
+template <typename... T>
+inline
+future<>
+subscription<T...>::done() {
+    return _stream->_done.get_future();
+}
+
 
 
 
@@ -4533,6 +5089,87 @@ public:
     future<> close() { return _dsi->close(); }
 };
 
+
+
+
+template <typename CharType>
+class scattered_message {
+private:
+    using fragment = net::fragment;
+    using packet = net::packet;
+    using char_type = CharType;
+    packet _p;
+public:
+    scattered_message() {}
+    scattered_message(scattered_message&&) = default;
+    scattered_message(const scattered_message&) = delete;
+
+    void append_static(const char_type* buf, size_t size) {
+        if (size) {
+            _p = packet(std::move(_p), fragment{(char_type*)buf, size}, deleter());
+        }
+    }
+
+    template <size_t N>
+    void append_static(const char_type(&s)[N]) {
+        append_static(s, N - 1);
+    }
+
+    void append_static(const char_type* s) {
+        append_static(s, strlen(s));
+    }
+
+    template <typename size_type, size_type max_size>
+    void append_static(const basic_sstring<char_type, size_type, max_size>& s) {
+        append_static(s.begin(), s.size());
+    }
+
+    void append_static(const std::string_view& s) {
+        append_static(s.data(), s.size());
+    }
+
+    template <typename size_type, size_type max_size>
+    void append(basic_sstring<char_type, size_type, max_size> s) {
+        if (s.size()) {
+            _p = packet(std::move(_p), std::move(s).release());
+        }
+    }
+
+    template <typename size_type, size_type max_size, typename Callback>
+    void append(const basic_sstring<char_type, size_type, max_size>& s, Callback callback) {
+        if (s.size()) {
+            _p = packet(std::move(_p), fragment{s.begin(), s.size()}, make_deleter(std::move(callback)));
+        }
+    }
+
+    void reserve(int n_frags) {
+        _p.reserve(n_frags);
+    }
+
+    packet release() && {
+        return std::move(_p);
+    }
+
+    template <typename Callback>
+    void on_delete(Callback callback) {
+        _p = packet(std::move(_p), make_deleter(std::move(callback)));
+    }
+
+    operator bool() const {
+        return _p.len();
+    }
+
+    size_t size() {
+        return _p.len();
+    }
+};
+
+
+
+
+
+
+
 template <typename CharType>
 class input_stream final {
     static_assert(sizeof(CharType) == 1, "must buffer stream of bytes");
@@ -4648,81 +5285,6 @@ private:
 
 
 
-
-
-
-
-template <typename CharType>
-class scattered_message {
-private:
-    using fragment = net::fragment;
-    using packet = net::packet;
-    using char_type = CharType;
-    packet _p;
-public:
-    scattered_message() {}
-    scattered_message(scattered_message&&) = default;
-    scattered_message(const scattered_message&) = delete;
-
-    void append_static(const char_type* buf, size_t size) {
-        if (size) {
-            _p = packet(std::move(_p), fragment{(char_type*)buf, size}, deleter());
-        }
-    }
-
-    template <size_t N>
-    void append_static(const char_type(&s)[N]) {
-        append_static(s, N - 1);
-    }
-
-    void append_static(const char_type* s) {
-        append_static(s, strlen(s));
-    }
-
-    template <typename size_type, size_type max_size>
-    void append_static(const basic_sstring<char_type, size_type, max_size>& s) {
-        append_static(s.begin(), s.size());
-    }
-
-    void append_static(const std::string_view& s) {
-        append_static(s.data(), s.size());
-    }
-
-    template <typename size_type, size_type max_size>
-    void append(basic_sstring<char_type, size_type, max_size> s) {
-        if (s.size()) {
-            _p = packet(std::move(_p), std::move(s).release());
-        }
-    }
-
-    template <typename size_type, size_type max_size, typename Callback>
-    void append(const basic_sstring<char_type, size_type, max_size>& s, Callback callback) {
-        if (s.size()) {
-            _p = packet(std::move(_p), fragment{s.begin(), s.size()}, make_deleter(std::move(callback)));
-        }
-    }
-
-    void reserve(int n_frags) {
-        _p.reserve(n_frags);
-    }
-
-    packet release() && {
-        return std::move(_p);
-    }
-
-    template <typename Callback>
-    void on_delete(Callback callback) {
-        _p = packet(std::move(_p), make_deleter(std::move(callback)));
-    }
-
-    operator bool() const {
-        return _p.len();
-    }
-
-    size_t size() {
-        return _p.len();
-    }
-};
 
 
 
@@ -4846,7 +5408,7 @@ public:
     void shutdown_input();
 };
 
-
+namespace net{
 class socket {
     std::unique_ptr<::net::socket_impl> _si;
 public:
@@ -4857,6 +5419,7 @@ public:
     future<connected_socket> connect(socket_address sa, socket_address local = socket_address(::sockaddr_in{AF_INET, INADDR_ANY, {0}}),transport proto = transport::TCP);
     void shutdown();
 };
+}
 
 class server_socket {
     std::unique_ptr<net::server_socket_impl> _ssi;
@@ -4879,20 +5442,13 @@ public:
     future<connected_socket> connect(socket_address sa, socket_address local = socket_address(::sockaddr_in{AF_INET, INADDR_ANY, {0}}), transport proto = transport::TCP) {
         return socket().connect(sa, local, proto);
     }
-    virtual socket socket() = 0;
+    virtual net::socket socket() = 0;
     virtual ::net::udp_channel make_udp_channel(ipv4_addr addr = {}) = 0;
     virtual future<> initialize() {
         return make_ready_future();
     }
     virtual bool has_per_core_namespace() = 0;
 };
-
-
-
-
-
-
-
 
 
 /*-------------------------------------------------reactor类定义----------------------------------------------------------------*/
@@ -4976,26 +5532,10 @@ protected:
 private:
     std::unique_ptr<pollable_fd_state> _s;
 };
-
-
-class readable_eventfd {
-    pollable_fd _fd;
-public:
-    explicit readable_eventfd(size_t initial = 0) : _fd(try_create_eventfd(initial)) {}
-    readable_eventfd(readable_eventfd&&) = default;
-    writeable_eventfd write_side();
-    future<size_t> wait();
-    int get_write_fd() { return _fd.get_fd(); }
-private:
-    explicit readable_eventfd(file_desc&& fd) : _fd(std::move(fd)) {}
-    static file_desc try_create_eventfd(size_t initial);
-
-    friend class writeable_eventfd;
-};
-
+class readable_eventfd;
 class writeable_eventfd {
-    file_desc _fd;
 public:
+    file_desc _fd;
     explicit writeable_eventfd(size_t initial = 0) : _fd(try_create_eventfd(initial)) {}
     writeable_eventfd(writeable_eventfd&&) = default;
     readable_eventfd read_side();
@@ -5003,8 +5543,21 @@ public:
     int get_read_fd() { return _fd.get(); }
     explicit writeable_eventfd(file_desc&& fd) : _fd(std::move(fd)) {}
     static file_desc try_create_eventfd(size_t initial);
-    friend class readable_eventfd;
 };
+
+class readable_eventfd {
+public:
+    pollable_fd _fd;
+    explicit readable_eventfd(size_t initial = 0) : _fd(try_create_eventfd(initial)) {}
+    readable_eventfd(readable_eventfd&&) = default;
+    writeable_eventfd write_side();
+    future<size_t> wait();
+    int get_write_fd() { return _fd.get_fd(); }
+    explicit readable_eventfd(file_desc&& fd) : _fd(std::move(fd)) {}
+    static file_desc try_create_eventfd(size_t initial);
+};
+
+
 
 class reactor_notifier {
 public:
@@ -5060,6 +5613,486 @@ public:
     void submit_item(std::unique_ptr<syscall_work_queue::work_item> wi);
     friend class thread_pool;
 };
+
+
+/*-----------------------------file-----------------------------------------------------------------*/
+
+/// \see file::list_directory()
+enum class directory_entry_type {
+    block_device,
+    char_device,
+    directory,
+    fifo,
+    link,
+    regular,
+    socket,
+};
+
+/// Enumeration describing the type of a particular filesystem
+enum class fs_type {
+    other,
+    xfs,
+    ext2,
+    ext3,
+    ext4,
+    btrfs,
+    hfs,
+    tmpfs,
+};
+
+/// A directory entry being listed.
+struct directory_entry {
+    /// Name of the file in a directory entry.  Will never be "." or "..".  Only the last component is included.
+    sstring name;
+    /// Type of the directory entry, if known.
+    std::optional<directory_entry_type> type;
+};
+
+/// File open options
+///
+/// Options used to configure an open file.
+///
+/// \ref file
+struct file_open_options {
+    uint64_t extent_allocation_size_hint = 1 << 20; ///< Allocate this much disk space when extending the file
+    bool sloppy_size = false; ///< Allow the file size not to track the amount of data written until a flush
+    uint64_t sloppy_size_hint = 1 << 20; ///< Hint as to what the eventual file size will be
+};
+
+
+const io_priority_class& default_priority_class();
+
+class file;
+class file_impl;
+
+namespace File {
+
+class file_handle;
+
+// A handle that can be transported across shards and used to
+// create a dup(2)-like `file` object referring to the same underlying file
+class file_handle_impl {
+public:
+    virtual ~file_handle_impl() = default;
+    virtual std::unique_ptr<file_handle_impl> clone() const = 0;
+    virtual shared_ptr<file_impl> to_file() && = 0;
+};
+
+}
+
+class file_impl {
+protected:
+    static file_impl* get_file_impl(file& f);
+public:
+    unsigned _memory_dma_alignment = 4096;
+    unsigned _disk_read_dma_alignment = 4096;
+    unsigned _disk_write_dma_alignment = 4096;
+public:
+    virtual ~file_impl() {}
+
+    virtual future<size_t> write_dma(uint64_t pos, const void* buffer, size_t len, const io_priority_class& pc) = 0;
+    virtual future<size_t> write_dma(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc) = 0;
+    virtual future<size_t> read_dma(uint64_t pos, void* buffer, size_t len, const io_priority_class& pc) = 0;
+    virtual future<size_t> read_dma(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc) = 0;
+    virtual future<> flush(void) = 0;
+    virtual future<struct stat> stat(void) = 0;
+    virtual future<> truncate(uint64_t length) = 0;
+    virtual future<> discard(uint64_t offset, uint64_t length) = 0;
+    virtual future<> allocate(uint64_t position, uint64_t length) = 0;
+    virtual future<uint64_t> size(void) = 0;
+    virtual future<> close() = 0;
+    virtual std::unique_ptr<File::file_handle_impl> dup();
+    virtual subscription<directory_entry> list_directory(std::function<future<> (directory_entry de)> next) = 0;
+    virtual future<temporary_buffer<uint8_t>> dma_read_bulk(uint64_t offset, size_t range_size, const io_priority_class& pc) = 0;
+
+    friend class reactor;
+};
+
+/// \endcond
+
+/// A data file on persistent storage.
+///
+/// File objects represent uncached, unbuffered files.  As such great care
+/// must be taken to cache data at the application layer; neither seastar
+/// nor the OS will cache these file.
+///
+/// Data is transferred using direct memory access (DMA).  This imposes
+/// restrictions on file offsets and data pointers.  The former must be aligned
+/// on a 4096 byte boundary, while a 512 byte boundary suffices for the latter.
+class file {
+    shared_ptr<file_impl> _file_impl;
+private:
+    explicit file(int fd, file_open_options options);
+public:
+    /// Default constructor constructs an uninitialized file object.
+    ///
+    /// A default constructor is useful for the common practice of declaring
+    /// a variable, and only assigning to it later. The uninitialized file
+    /// must not be used, or undefined behavior will result (currently, a null
+    /// pointer dereference).
+    ///
+    /// One can check whether a file object is in uninitialized state with
+    /// \ref operator bool(); One can reset a file back to uninitialized state
+    /// by assigning file() to it.
+    file() : _file_impl(nullptr) {}
+
+    file(shared_ptr<file_impl> impl)
+            : _file_impl(std::move(impl)) {}
+
+    /// Constructs a file object from a \ref file_handle obtained from another shard
+    explicit file(File::file_handle&& handle);
+
+    /// Checks whether the file object was initialized.
+    ///
+    /// \return false if the file object is uninitialized (default
+    /// constructed), true if the file object refers to an actual file.
+    explicit operator bool() const noexcept { return bool(_file_impl); }
+
+    /// Copies a file object.  The new and old objects refer to the
+    /// same underlying file.
+    ///
+    /// \param x file object to be copied
+    file(const file& x) = default;
+    /// Moves a file object.
+    file(file&& x) noexcept : _file_impl(std::move(x._file_impl)) {}
+    /// Assigns a file object.  After assignent, the destination and source refer
+    /// to the same underlying file.
+    ///
+    /// \param x file object to assign to `this`.
+    file& operator=(const file& x) noexcept = default;
+    /// Moves assigns a file object.
+    file& operator=(file&& x) noexcept = default;
+
+    // O_DIRECT reading requires that buffer, offset, and read length, are
+    // all aligned. Alignment of 4096 was necessary in the past, but no longer
+    // is - 512 is usually enough; But we'll need to use BLKSSZGET ioctl to
+    // be sure it is really enough on this filesystem. 4096 is always safe.
+    // In addition, if we start reading in things outside page boundaries,
+    // we will end up with various pages around, some of them with
+    // overlapping ranges. Those would be very challenging to cache.
+
+    /// Alignment requirement for file offsets (for reads)
+    uint64_t disk_read_dma_alignment() const {
+        return _file_impl->_disk_read_dma_alignment;
+    }
+
+    /// Alignment requirement for file offsets (for writes)
+    uint64_t disk_write_dma_alignment() const {
+        return _file_impl->_disk_write_dma_alignment;
+    }
+
+    /// Alignment requirement for data buffers
+    uint64_t memory_dma_alignment() const {
+        return _file_impl->_memory_dma_alignment;
+    }
+
+
+    /**
+     * Perform a single DMA read operation.
+     *
+     * @param aligned_pos offset to begin reading at (should be aligned)
+     * @param aligned_buffer output buffer (should be aligned)
+     * @param aligned_len number of bytes to read (should be aligned)
+     * @param pc the IO priority class under which to queue this operation
+     *
+     * Alignment is HW dependent but use 4KB alignment to be on the safe side as
+     * explained above.
+     *
+     * @return number of bytes actually read
+     * @throw exception in case of I/O error
+     */
+    template <typename CharType>
+    future<size_t>
+    dma_read(uint64_t aligned_pos, CharType* aligned_buffer, size_t aligned_len, const io_priority_class& pc = default_priority_class()) {
+        return _file_impl->read_dma(aligned_pos, aligned_buffer, aligned_len, pc);
+    }
+
+    /**
+     * Read the requested amount of bytes starting from the given offset.
+     *
+     * @param pos offset to begin reading from
+     * @param len number of bytes to read
+     * @param pc the IO priority class under which to queue this operation
+     *
+     * @return temporary buffer containing the requested data.
+     * @throw exception in case of I/O error
+     *
+     * This function doesn't require any alignment for both "pos" and "len"
+     *
+     * @note size of the returned buffer may be smaller than "len" if EOF is
+     *       reached of in case of I/O error.
+     */
+    template <typename CharType>
+    future<temporary_buffer<CharType>> dma_read(uint64_t pos, size_t len, const io_priority_class& pc = default_priority_class()) {
+        return dma_read_bulk<CharType>(pos, len, pc).then(
+                [len] (temporary_buffer<CharType> buf) {
+            if (len < buf.size()) {
+                buf.trim(len);
+            }
+
+            return std::move(buf);
+        });
+    }
+
+    /// Error thrown when attempting to read past end-of-file
+    /// with \ref dma_read_exactly().
+    class eof_error : public std::exception {};
+
+    /**
+     * Read the exact amount of bytes.
+     *
+     * @param pos offset in a file to begin reading from
+     * @param len number of bytes to read
+     * @param pc the IO priority class under which to queue this operation
+     *
+     * @return temporary buffer containing the read data
+     * @throw end_of_file_error if EOF is reached, file_io_error or
+     *        std::system_error in case of I/O error.
+     */
+    template <typename CharType>
+    future<temporary_buffer<CharType>>
+    dma_read_exactly(uint64_t pos, size_t len, const io_priority_class& pc = default_priority_class()) {
+        return dma_read<CharType>(pos, len, pc).then(
+                [pos, len] (auto buf) {
+            if (buf.size() < len) {
+                throw eof_error();
+            }
+
+            return std::move(buf);
+        });
+    }
+
+    /// Performs a DMA read into the specified iovec.
+    ///
+    /// \param pos offset to read from.  Must be aligned to \ref dma_alignment.
+    /// \param iov vector of address/size pairs to read into.  Addresses must be
+    ///            aligned.
+    /// \param pc the IO priority class under which to queue this operation
+    ///
+    /// \return a future representing the number of bytes actually read.  A short
+    ///         read may happen due to end-of-file or an I/O error.
+    future<size_t> dma_read(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc = default_priority_class()) {
+        return _file_impl->read_dma(pos, std::move(iov), pc);
+    }
+
+    /// Performs a DMA write from the specified buffer.
+    ///
+    /// \param pos offset to write into.  Must be aligned to \ref dma_alignment.
+    /// \param buffer aligned address of buffer to read from.  Buffer must exists
+    ///               until the future is made ready.
+    /// \param len number of bytes to write.  Must be aligned.
+    /// \param pc the IO priority class under which to queue this operation
+    ///
+    /// \return a future representing the number of bytes actually written.  A short
+    ///         write may happen due to an I/O error.
+    template <typename CharType>
+    future<size_t> dma_write(uint64_t pos, const CharType* buffer, size_t len, const io_priority_class& pc = default_priority_class()) {
+        return _file_impl->write_dma(pos, buffer, len, pc);
+    }
+
+    /// Performs a DMA write to the specified iovec.
+    ///
+    /// \param pos offset to write into.  Must be aligned to \ref dma_alignment.
+    /// \param iov vector of address/size pairs to write from.  Addresses must be
+    ///            aligned.
+    /// \param pc the IO priority class under which to queue this operation
+    ///
+    /// \return a future representing the number of bytes actually written.  A short
+    ///         write may happen due to an I/O error.
+    future<size_t> dma_write(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc = default_priority_class()) {
+        return _file_impl->write_dma(pos, std::move(iov), pc);
+    }
+
+    /// Causes any previously written data to be made stable on persistent storage.
+    ///
+    /// Prior to a flush, written data may or may not survive a power failure.  After
+    /// a flush, data is guaranteed to be on disk.
+    future<> flush() {
+        return _file_impl->flush();
+    }
+
+    /// Returns \c stat information about the file.
+    future<struct stat> stat() {
+        return _file_impl->stat();
+    }
+
+    /// Truncates the file to a specified length.
+    future<> truncate(uint64_t length) {
+        return _file_impl->truncate(length);
+    }
+
+    /// Preallocate disk blocks for a specified byte range.
+    ///
+    /// Requests the file system to allocate disk blocks to
+    /// back the specified range (\c length bytes starting at
+    /// \c position).  The range may be outside the current file
+    /// size; the blocks can then be used when appending to the
+    /// file.
+    ///
+    /// \param position beginning of the range at which to allocate
+    ///                 blocks.
+    /// \parm length length of range to allocate.
+    /// \return future that becomes ready when the operation completes.
+    future<> allocate(uint64_t position, uint64_t length) {
+        return _file_impl->allocate(position, length);
+    }
+
+    /// Discard unneeded data from the file.
+    ///
+    /// The discard operation tells the file system that a range of offsets
+    /// (which be aligned) is no longer needed and can be reused.
+    future<> discard(uint64_t offset, uint64_t length) {
+        return _file_impl->discard(offset, length);
+    }
+
+    /// Gets the file size.
+    future<uint64_t> size() const {
+        return _file_impl->size();
+    }
+
+    /// Closes the file.
+    ///
+    /// Flushes any pending operations and release any resources associated with
+    /// the file (except for stable storage).
+    ///
+    /// \note
+    /// to ensure file data reaches stable storage, you must call \ref flush()
+    /// before calling \c close().
+    future<> close() {
+        return _file_impl->close();
+    }
+
+    /// Returns a directory listing, given that this file object is a directory.
+    subscription<directory_entry> list_directory(std::function<future<> (directory_entry de)> next) {
+        return _file_impl->list_directory(std::move(next));
+    }
+
+    /**
+     * Read a data bulk containing the provided addresses range that starts at
+     * the given offset and ends at either the address aligned to
+     * dma_alignment (4KB) or at the file end.
+     *
+     * @param offset starting address of the range the read bulk should contain
+     * @param range_size size of the addresses range
+     * @param pc the IO priority class under which to queue this operation
+     *
+     * @return temporary buffer containing the read data bulk.
+     * @throw system_error exception in case of I/O error or eof_error when
+     *        "offset" is beyond EOF.
+     */
+    template <typename CharType>
+    future<temporary_buffer<CharType>>
+    dma_read_bulk(uint64_t offset, size_t range_size, const io_priority_class& pc = default_priority_class()) {
+        return _file_impl->dma_read_bulk(offset, range_size, pc).then([] (temporary_buffer<uint8_t> t) {
+            return temporary_buffer<CharType>(reinterpret_cast<CharType*>(t.get_write()), t.size(), t.release());
+        });
+    }
+
+    /// \brief Creates a handle that can be transported across shards.
+    ///
+    /// Creates a handle that can be transported across shards, and then
+    /// used to create a new shard-local \ref file object that refers to
+    /// the same on-disk file.
+    ///
+    /// \note Use on read-only files.
+    ///
+    File::file_handle dup();
+
+    template <typename CharType>
+    struct read_state;
+private:
+    friend class reactor;
+    friend class file_impl;
+};
+
+
+/// \brief A shard-transportable handle to a file
+/// If you need to access a file (for reads only) across multiple shards,
+/// you can use the file::dup() method to create a `file_handle`, transport
+/// this file handle to another shard, and use the handle to create \ref file
+/// object on that shard.  This is more efficient than calling open_file_dma()
+/// again.
+
+namespace File{
+class file_handle {
+    std::unique_ptr<File::file_handle_impl> _impl;
+private:
+    explicit file_handle(std::unique_ptr<File::file_handle_impl> impl) : _impl(std::move(impl)) {}
+public:
+    /// Copies a file handle object
+    file_handle(const file_handle&);
+    /// Moves a file handle object
+    file_handle(file_handle&&) noexcept;
+    /// Assigns a file handle object
+    file_handle& operator=(const file_handle&);
+    /// Move-assigns a file handle object
+    file_handle& operator=(file_handle&&) noexcept;
+    /// Converts the file handle object to a \ref file.
+    file to_file() const &;
+    /// Converts the file handle object to a \ref file.
+    file to_file() &&;
+    friend class ::file;
+};
+}
+template <typename CharType>
+struct file::read_state {
+    typedef temporary_buffer<CharType> tmp_buf_type;
+    read_state(uint64_t offset, uint64_t front, size_t to_read,
+            size_t memory_alignment, size_t disk_alignment)
+    : buf(tmp_buf_type::aligned(memory_alignment,
+                                align_up(to_read, disk_alignment)))
+    , _offset(offset)
+    , _to_read(to_read)
+    , _front(front) {}
+    bool done() const {
+        return eof || pos >= _to_read;
+    }
+    /**
+     * Trim the buffer to the actual number of read bytes and cut the
+     * bytes from offset 0 till "_front".
+     *
+     * @note this function has to be called only if we read bytes beyond
+     *       "_front".
+     */
+    void trim_buf_before_ret() {
+        if (have_good_bytes()) {
+            buf.trim(pos);
+            buf.trim_front(_front);
+        } else {
+            buf.trim(0);
+        }
+    }
+    uint64_t cur_offset() const {
+        return _offset + pos;
+    }
+    size_t left_space() const {
+        return buf.size() - pos;
+    }
+    size_t left_to_read() const {
+        // positive as long as (done() == false)
+        return _to_read - pos;
+    }
+    void append_new_data(tmp_buf_type& new_data) {
+        auto to_copy = std::min(left_space(), new_data.size());
+        std::memcpy(buf.get_write() + pos, new_data.get(), to_copy);
+        pos += to_copy;
+    }
+    bool have_good_bytes() const {
+        return pos > _front;
+    }
+
+public:
+    bool         eof      = false;
+    tmp_buf_type buf;
+    size_t       pos      = 0;
+private:
+    uint64_t     _offset;
+    size_t       _to_read;
+    uint64_t     _front;
+};
+
+
+
 
 class thread_pool {
     uint64_t _aio_threaded_fallbacks = 0;
@@ -5158,9 +6191,40 @@ public:
         _write.signal(1);
     }
 };
+enum class open_flags {
+    rw = O_RDWR,
+    ro = O_RDONLY,
+    wo = O_WRONLY,
+    create = O_CREAT,
+    truncate = O_TRUNC,
+    exclusive = O_EXCL,
+};
 
+inline open_flags operator|(open_flags a, open_flags b) {
+    return open_flags(static_cast<unsigned int>(a) | static_cast<unsigned int>(b));
+}
 
 struct reactor {
+    struct poller {
+        std::unique_ptr<pollfn> _pollfn;
+        class registration_task;
+        class deregistration_task;
+        registration_task* _registration_task;
+    public:
+        template <typename Func> // signature: bool ()
+        static poller simple(Func&& poll) {
+            return poller(make_pollfn(std::forward<Func>(poll)));
+        }
+        poller(std::unique_ptr<pollfn> fn)
+                : _pollfn(std::move(fn)) {
+            do_register();
+        }
+        ~poller();
+        poller(poller&& x);
+        poller& operator=(poller&& x);
+        void do_register();
+        friend class reactor;
+    };
 /*---------构造函数和析构函数----------------*/
     // reactor();
     reactor(unsigned int id);
@@ -5186,6 +6250,7 @@ struct reactor {
     using manual_timer = timer<manual_clock>;
     file_desc _task_quota_timer;
     std::optional<pollable_fd> _aio_eventfd;
+    std::optional<poller> _epoll_poller;
 /*---------------------------------------------*/
     void add_timer(steady_timer* tmr);
     bool queue_timer(steady_timer* tmr);
@@ -5214,6 +6279,9 @@ struct reactor {
     std::chrono::duration<double> _task_quota;
     condition_variable _stop_requested;
     std::atomic<bool> _sleeping alignas(64);
+    std::atomic<uint64_t> _tasks_processed = { 0 };
+    std::atomic<uint64_t> _polls = { 0 };
+    std::atomic<unsigned> _tasks_processed_stalled = { 0 };
     std::deque<std::unique_ptr<task>> _pending_tasks;
     void run_tasks(std::deque<std::unique_ptr<task>>& tasks);
     std::vector<std::function<future<> ()>> _exit_funcs;//为什么不用引用?
@@ -5236,7 +6304,6 @@ struct reactor {
     semaphore _io_context_available;
     static constexpr size_t max_aio = 128;
     semaphore _cpu_started;
-    io_context_t _io_context;
     promise<> _start_promise;
     future<> when_started() { return _start_promise.get_future(); }
     /*----------------全局--------------*/
@@ -5245,6 +6312,7 @@ struct reactor {
     static boost::program_options::options_description get_options_description();
     void configure(boost::program_options::variables_map config);
    /*----------------------资源分配相关-----------------------*/
+
     shard_id _io_coordinator;
     io_queue* _io_queue;
     std::unique_ptr<io_queue> my_io_queue = {};
@@ -5253,12 +6321,10 @@ struct reactor {
     void wakeup() { pthread_kill(_thread_id, alarm_signal());}
     std::chrono::nanoseconds calculate_poll_time();
     /*-----------其他---------------*/
+    sigset_t _active_sigmask; // holds sigmask while sleeping with sig disabled
     unsigned _max_task_backlog = 1000;
     std::chrono::nanoseconds _max_poll_time = calculate_poll_time();
     bool _strict_o_direct = true;
-    void set_strict_dma(bool value) {
-        _strict_o_direct = value;
-    }
     /*----------------------poller相关----------------------------------------------------*/
     std::vector<pollfn*> _pollers;
     thread_pool _thread_pool;
@@ -5266,26 +6332,7 @@ struct reactor {
     
     void unregister_poller(pollfn* p);
     void register_poller(pollfn* p);
-    struct poller {
-        std::unique_ptr<pollfn> _pollfn;
-        class registration_task;
-        class deregistration_task;
-        registration_task* _registration_task;
-    public:
-        template <typename Func> // signature: bool ()
-        static poller simple(Func&& poll) {
-            return poller(make_pollfn(std::forward<Func>(poll)));
-        }
-        poller(std::unique_ptr<pollfn> fn)
-                : _pollfn(std::move(fn)) {
-            do_register();
-        }
-        ~poller();
-        poller(poller&& x);
-        poller& operator=(poller&& x);
-        void do_register();
-        friend class reactor;
-    };
+
     class io_pollfn;
     class signal_pollfn;
     class aio_batch_submit_pollfn;
@@ -5299,9 +6346,14 @@ struct reactor {
     class execution_stage_pollfn;
     bool poll_once();
     bool pure_poll_once();
+    bool flush_tcp_batches();
+    bool flush_pending_aio(); 
     /*----------------------------------IO相关--------------------------------------------*/
-
-
+    std::deque<output_stream<char>* > _flush_batching;
+    io_context_t _io_context;
+    std::vector<struct ::iocb> _pending_aio;
+    bool process_io();
+    void start_epoll();
     void start_aio_eventfd_loop();
     server_socket listen(socket_address sa, listen_options opts = {});
     future<connected_socket> connect(socket_address sa);
@@ -5338,6 +6390,43 @@ struct reactor {
     future<io_event> submit_io_read(const io_priority_class& priority_class, size_t len, Func prepare_io);
     template <typename Func>
     future<io_event> submit_io_write(const io_priority_class& priority_class, size_t len, Func prepare_io);
+    bool wait_and_process(int timeout = 0, const sigset_t* active_sigmask = nullptr) {
+        return _backend.wait_and_process(timeout, active_sigmask);
+    }
+    future<> readable(pollable_fd_state& fd) {
+        return _backend.readable(fd);
+    }
+    future<> writeable(pollable_fd_state& fd) {
+        return _backend.writeable(fd);
+    }
+    void forget(pollable_fd_state& fd) {
+        _backend.forget(fd);
+    }
+    future<> notified(reactor_notifier *n) {
+        return _backend.notified(n);
+    }
+    void abort_reader(pollable_fd_state& fd, std::exception_ptr ex) {
+        return _backend.abort_reader(fd, std::move(ex));
+    }
+    void abort_writer(pollable_fd_state& fd, std::exception_ptr ex) {
+        return _backend.abort_writer(fd, std::move(ex));
+    }
+    void enable_timer(steady_clock_type::time_point when);
+    std::unique_ptr<reactor_notifier> make_reactor_notifier() {
+        return _backend.make_reactor_notifier();
+    }
+    /// Sets the "Strict DMA" flag.
+    /// When true (default), file I/O operations must use DMA.  This is
+    /// the most performant option, but does not work on some file systems
+    /// such as tmpfs or aufs (used in some Docker setups).
+    ///
+    /// When false, file I/O operations can fall back to buffered I/O if
+    /// DMA is not available.  This can result in dramatic reducation in
+    /// performance and an increase in memory consumption.
+    void set_strict_dma(bool value) {
+        _strict_o_direct = value;
+    }
+
     /*-------------------------------------网络相关--------------------------------------------------------------------*/
     const bool _reuseport;
     std::unique_ptr<network_stack> _network_stack;
@@ -5354,7 +6443,71 @@ reactor::pure_poll_once() {
     return false;
 }
 
+bool reactor::flush_pending_aio() {
+    bool did_work = false;
+    while (!_pending_aio.empty()) {
+        auto nr = _pending_aio.size();
+        struct iocb* iocbs[max_aio];
+        for (size_t i = 0; i < nr; ++i) {
+            iocbs[i] = &_pending_aio[i];
+        }
+        auto r = ::io_submit(_io_context, nr, iocbs);
+        size_t nr_consumed;
+        if (r < 0) {
+            auto ec = -r;
+            switch (ec) {
+                case EAGAIN:
+                    return did_work;
+                case EBADF: {
+                    auto pr = reinterpret_cast<promise<io_event>*>(iocbs[0]->data);
+                    try {
+                        // throw_kernel_error(r);
+                        std::cout<<"error"<<std::endl;
+                        throw std::system_error(ec, std::system_category());
+                    } catch (...) {
+                        pr->set_exception(std::current_exception());
+                    }
+                    delete pr;
+                    _io_context_available.signal(1);
+                    // if EBADF, it means that the first request has a bad fd, so
+                    // we will only remove it from _pending_aio and try again.
+                    nr_consumed = 1;
+                    break;
+                }
+                default:
+                    throw std::system_error(ec, std::system_category());
+                    abort();
+            }
+        } else {
+            nr_consumed = size_t(r);
+        }
 
+        did_work = true;
+        if (nr_consumed == nr) {
+            _pending_aio.clear();
+        } else {
+            _pending_aio.erase(_pending_aio.begin(), _pending_aio.begin() + nr_consumed);
+        }
+    }
+    return did_work;
+}
+
+
+
+bool reactor::process_io()
+{
+    io_event ev[max_aio];
+    struct timespec timeout = {0, 0};
+    auto n = ::io_getevents(_io_context, 1, max_aio, ev, &timeout);
+    assert(n >= 0);
+    for (size_t i = 0; i < size_t(n); ++i) {
+        auto pr = reinterpret_cast<promise<io_event>*>(ev[i].data);
+        pr->set_value(ev[i]);
+        delete pr;
+    }
+    _io_context_available.signal(n);
+    return n;
+}
 
 void reactor::register_poller(pollfn* p) {
     _pollers.push_back(p);
@@ -5363,6 +6516,27 @@ void reactor::register_poller(pollfn* p) {
 void reactor::unregister_poller(pollfn* p) {
     _pollers.erase(std::find(_pollers.begin(), _pollers.end(), p));
 }
+
+
+void
+reactor::start_epoll() {
+    if (!_epoll_poller) {
+        _epoll_poller = poller(std::make_unique<epoll_pollfn>(*this));
+    }
+}
+
+bool
+reactor::flush_tcp_batches() {
+    bool work = _flush_batching.size();
+    while (!_flush_batching.empty()) {
+        auto os = std::move(_flush_batching.front());
+        _flush_batching.pop_front();
+        os->poll_flush();
+    }
+    return work;
+}
+
+
 
 class reactor::poller::registration_task : public task {
 private:
@@ -5663,319 +6837,16 @@ public:
     }
 };
 
-class reactor::smp_pollfn final : public pollfn {
-    reactor& _r;
-    struct aligned_flag {
-        std::atomic<bool> flag;
-        char pad[63];
-        bool try_lock() {
-            return !flag.exchange(true, std::memory_order_relaxed);
-        }
-        void unlock() {
-            flag.store(false, std::memory_order_relaxed);
-        }
-    };
-    static aligned_flag _membarrier_lock;
-public:
-    smp_pollfn(reactor& r) : _r(r) {}
-    virtual bool poll() final override {
-        return smp::poll_queues();
-    }
-    virtual bool pure_poll() final override {
-        return smp::pure_poll_queues();
-    }
-    virtual bool try_enter_interrupt_mode() override {
-        // systemwide_memory_barrier() is very slow if run concurrently,
-        // so don't go to sleep if it is running now.
-        if (!_membarrier_lock.try_lock()) {
-            return false;
-        }
-        _r._sleeping.store(true, std::memory_order_relaxed);
-        systemwide_memory_barrier();
-        _membarrier_lock.unlock();
-        if (poll()) {
-            // raced
-            _r._sleeping.store(false, std::memory_order_relaxed);
-            return false;
-        }
-        return true;
-    }
-    virtual void exit_interrupt_mode() override final {
-        _r._sleeping.store(false, std::memory_order_relaxed);
-    }
-};
-
-class reactor::execution_stage_pollfn final : public pollfn {
-    internal::execution_stage_manager& _esm;
-public:
-    execution_stage_pollfn() : _esm(internal::execution_stage_manager::get()) { }
-
-    virtual bool poll() override {
-        return _esm.flush();
-    }
-    virtual bool pure_poll() override {
-        return _esm.poll();
-    }
-    virtual bool try_enter_interrupt_mode() override {
-        // This is a passive poller, so if a previous poll
-        // returned false (idle), there's no more work to do.
-        return true;
-    }
-    virtual void exit_interrupt_mode() override { }
-};
-
-
-class reactor::syscall_pollfn final : public pollfn {
-    reactor& _r;
-public:
-    syscall_pollfn(reactor& r) : _r(r) {}
-    virtual bool poll() final override {
-        return _r._thread_pool.complete();
-    }
-    virtual bool pure_poll() override final {
-        return poll(); // actually performs work, but triggers no user continuations, so okay
-    }
-    virtual bool try_enter_interrupt_mode() override {
-        _r._thread_pool.enter_interrupt_mode();
-        if (poll()) {
-            // raced
-            _r._thread_pool.exit_interrupt_mode();
-            return false;
-        }
-        return true;
-    }
-    virtual void exit_interrupt_mode() override final {
-        _r._thread_pool.exit_interrupt_mode();
-    }
-};
-
-
-// alignas(64) reactor::smp_pollfn::aligned_flag reactor::smp_pollfn::_membarrier_lock;
-
-class reactor::epoll_pollfn final : public pollfn {
-    reactor& _r;
-public:
-    epoll_pollfn(reactor& r) : _r(r) {}
-    virtual bool poll() final override {
-        return _r.wait_and_process();
-    }
-    virtual bool pure_poll() override final {
-        return poll(); // actually performs work, but triggers no user continuations, so okay
-    }
-    virtual bool try_enter_interrupt_mode() override {
-        // Since we'll be sleeping in epoll, no need to do anything
-        // for interrupt mode.
-        return true;
-    }
-    virtual void exit_interrupt_mode() override final {
-    }
-};
-
-
-
-inline
-future<size_t> pollable_fd::read_some(char* buffer, size_t size) {
-    return engine().read_some(*_s, buffer, size);
-}
-
-inline
-future<size_t> pollable_fd::read_some(uint8_t* buffer, size_t size) {
-    return engine().read_some(*_s, buffer, size);
-}
-
-inline
-future<size_t> pollable_fd::read_some(const std::vector<iovec>& iov) {
-    return engine().read_some(*_s, iov);
-}
-
-inline
-future<> pollable_fd::write_all(const char* buffer, size_t size) {
-    return engine().write_all(*_s, buffer, size);
-}
-
-inline
-future<> pollable_fd::write_all(const uint8_t* buffer, size_t size) {
-    return engine().write_all(*_s, buffer, size);
-}
-
-inline
-future<size_t> pollable_fd::write_some(net::packet& p) {
-    return engine().writeable(*_s).then([this, &p] () mutable {
-        static_assert(offsetof(iovec, iov_base) == offsetof(net::fragment, base) &&
-            sizeof(iovec::iov_base) == sizeof(net::fragment::base) &&
-            offsetof(iovec, iov_len) == offsetof(net::fragment, size) &&
-            sizeof(iovec::iov_len) == sizeof(net::fragment::size) &&
-            alignof(iovec) == alignof(net::fragment) &&
-            sizeof(iovec) == sizeof(net::fragment)
-            , "net::fragment and iovec should be equivalent");
-
-        iovec* iov = reinterpret_cast<iovec*>(p.fragment_array());
-        msghdr mh = {};
-        mh.msg_iov = iov;
-        mh.msg_iovlen = p.nr_frags();
-        auto r = get_file_desc().sendmsg(&mh, MSG_NOSIGNAL);
-        if (!r) {
-            return write_some(p);
-        }
-        if (size_t(*r) == p.len()) {
-            _s->speculate_epoll(EPOLLOUT);
-        }
-        return make_ready_future<size_t>(*r);
-    });
-}
-
-inline
-future<> pollable_fd::write_all(net::packet& p) {
-    return write_some(p).then([this, &p] (size_t size) {
-        if (p.len() == size) {
-            return make_ready_future<>();
-        }
-        p.trim_front(size);
-        return write_all(p);
-    });
-}
-
-inline
-future<> pollable_fd::readable() {
-    return engine().readable(*_s);
-}
-
-inline
-future<> pollable_fd::writeable() {
-    return engine().writeable(*_s);
-}
-
-inline
-void
-pollable_fd::abort_reader(std::exception_ptr ex) {
-    engine().abort_reader(*_s, std::move(ex));
-}
-
-inline
-void
-pollable_fd::abort_writer(std::exception_ptr ex) {
-    engine().abort_writer(*_s, std::move(ex));
-}
-
-inline
-future<pollable_fd, socket_address> pollable_fd::accept() {
-    return engine().accept(*_s);
-}
-
-inline
-future<size_t> pollable_fd::recvmsg(struct msghdr *msg) {
-    return engine().readable(*_s).then([this, msg] {
-        auto r = get_file_desc().recvmsg(msg, 0);
-        if (!r) {
-            return recvmsg(msg);
-        }
-        // We always speculate here to optimize for throughput in a workload
-        // with multiple outstanding requests. This way the caller can consume
-        // all messages without resorting to epoll. However this adds extra
-        // recvmsg() call when we hit the empty queue condition, so it may
-        // hurt request-response workload in which the queue is empty when we
-        // initially enter recvmsg(). If that turns out to be a problem, we can
-        // improve speculation by using recvmmsg().
-        _s->speculate_epoll(EPOLLIN);
-        return make_ready_future<size_t>(*r);
-    });
-};
-
-inline
-future<size_t> pollable_fd::sendmsg(struct msghdr* msg) {
-    return engine().writeable(*_s).then([this, msg] () mutable {
-        auto r = get_file_desc().sendmsg(msg, 0);
-        if (!r) {
-            return sendmsg(msg);
-        }
-        // For UDP this will always speculate. We can't know if there's room
-        // or not, but most of the time there should be so the cost of mis-
-        // speculation is amortized.
-        if (size_t(*r) == iovec_len(msg->msg_iov, msg->msg_iovlen)) {
-            _s->speculate_epoll(EPOLLOUT);
-        }
-        return make_ready_future<size_t>(*r);
-    });
-}
-
-inline
-future<size_t> pollable_fd::sendto(socket_address addr, const void* buf, size_t len) {
-    return engine().writeable(*_s).then([this, buf, len, addr] () mutable {
-        auto r = get_file_desc().sendto(addr, buf, len, 0);
-        if (!r) {
-            return sendto(std::move(addr), buf, len);
-        }
-        // See the comment about speculation in sendmsg().
-        if (size_t(*r) == len) {
-            _s->speculate_epoll(EPOLLOUT);
-        }
-        return make_ready_future<size_t>(*r);
-    });
-}
-
-
-void reactor::start_aio_eventfd_loop() {
-    if (!_aio_eventfd) {
-        return;
-    }
-    future<> loop_done = repeat([this] {
-        return _aio_eventfd->readable().then([this] {
-            char garbage[8];
-            ::read(_aio_eventfd->get_fd(), garbage, 8); // totally uninteresting
-            return _stopping ? stop_iteration::yes : stop_iteration::no;
-        });
-    });
-    // must use make_lw_shared, because at_exit expects a copyable function
-    at_exit([loop_done = make_lw_shared(std::move(loop_done))] {
-        return std::move(*loop_done);
-    });
-}
-
-/* not yet implemented for OSv. TODO: do the notification like we do class smp. */
-
-
-readable_eventfd writeable_eventfd::read_side() {
-    return readable_eventfd(_fd.dup());
-}
-
-file_desc writeable_eventfd::try_create_eventfd(size_t initial) {
-    assert(size_t(int(initial)) == initial);
-    return file_desc::eventfd(initial, EFD_CLOEXEC);
-}
-
-void writeable_eventfd::signal(size_t count) {
-    uint64_t c = count;
-    auto r = _fd.write(&c, sizeof(c));
-    assert(r == sizeof(c));
-}
-
-writeable_eventfd readable_eventfd::write_side() {
-    return writeable_eventfd(_fd.get_file_desc().dup());
-}
-
-file_desc readable_eventfd::try_create_eventfd(size_t initial) {
-    assert(size_t(int(initial)) == initial);
-    return file_desc::eventfd(initial, EFD_CLOEXEC | EFD_NONBLOCK);
-}
-
-future<size_t> readable_eventfd::wait() {
-    return engine().readable(*_fd._s).then([this] {
-        uint64_t count;
-        int r = ::read(_fd.get_fd(), &count, sizeof(count));
-        assert(r == sizeof(count));
-        return make_ready_future<size_t>(count);
-    });
-}
 
 void
 reactor::block_notifier(int) {
     auto steps = engine()._tasks_processed_stalled.load(std::memory_order_relaxed);
     auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(engine()._task_quota * steps);
 
-    backtrace_buffer buf;
-    buf.append("Reactor stalled for ");
-    buf.append_decimal(uint64_t(delta.count()));
-    buf.append(" ms");
+    // backtrace_buffer buf;
+    // buf.append("Reactor stalled for ");
+    // buf.append_decimal(uint64_t(delta.count()));
+    // buf.append(" ms");
     // print_with_backtrace(buf);
 }
 
@@ -6520,6 +7391,312 @@ std::optional<boost::barrier> smp::_all_event_loops_done;
 std::vector<reactor*> smp::_reactors;
 smp_message_queue** smp::_qs;//为什么是二级指针？
 std::thread::id smp::_tmain;
+
+
+
+class reactor::smp_pollfn final : public pollfn {
+    reactor& _r;
+    struct aligned_flag {
+        std::atomic<bool> flag;
+        char pad[63];
+        bool try_lock() {
+            return !flag.exchange(true, std::memory_order_relaxed);
+        }
+        void unlock() {
+            flag.store(false, std::memory_order_relaxed);
+        }
+    };
+    static aligned_flag _membarrier_lock;
+public:
+    smp_pollfn(reactor& r) : _r(r) {}
+    virtual bool poll() final override {
+        return smp::poll_queues();
+    }
+    virtual bool pure_poll() final override {
+        return smp::pure_poll_queues();
+    }
+    virtual bool try_enter_interrupt_mode() override {
+        // systemwide_memory_barrier() is very slow if run concurrently,
+        // so don't go to sleep if it is running now.
+        if (!_membarrier_lock.try_lock()) {
+            return false;
+        }
+        _r._sleeping.store(true, std::memory_order_relaxed);
+        systemwide_memory_barrier();
+        _membarrier_lock.unlock();
+        if (poll()) {
+            // raced
+            _r._sleeping.store(false, std::memory_order_relaxed);
+            return false;
+        }
+        return true;
+    }
+    virtual void exit_interrupt_mode() override final {
+        _r._sleeping.store(false, std::memory_order_relaxed);
+    }
+};
+
+class reactor::execution_stage_pollfn final : public pollfn {
+    internal::execution_stage_manager& _esm;
+public:
+    execution_stage_pollfn() : _esm(internal::execution_stage_manager::get()) { }
+
+    virtual bool poll() override {
+        return _esm.flush();
+    }
+    virtual bool pure_poll() override {
+        return _esm.poll();
+    }
+    virtual bool try_enter_interrupt_mode() override {
+        // This is a passive poller, so if a previous poll
+        // returned false (idle), there's no more work to do.
+        return true;
+    }
+    virtual void exit_interrupt_mode() override { }
+};
+
+
+class reactor::syscall_pollfn final : public pollfn {
+    reactor& _r;
+public:
+    syscall_pollfn(reactor& r) : _r(r) {}
+    virtual bool poll() final override {
+        return _r._thread_pool.complete();
+    }
+    virtual bool pure_poll() override final {
+        return poll(); // actually performs work, but triggers no user continuations, so okay
+    }
+    virtual bool try_enter_interrupt_mode() override {
+        _r._thread_pool.enter_interrupt_mode();
+        if (poll()) {
+            // raced
+            _r._thread_pool.exit_interrupt_mode();
+            return false;
+        }
+        return true;
+    }
+    virtual void exit_interrupt_mode() override final {
+        _r._thread_pool.exit_interrupt_mode();
+    }
+};
+
+
+// alignas(64) reactor::smp_pollfn::aligned_flag reactor::smp_pollfn::_membarrier_lock;
+
+class reactor::epoll_pollfn final : public pollfn {
+    reactor& _r;
+public:
+    epoll_pollfn(reactor& r) : _r(r) {}
+    virtual bool poll() final override {
+        return _r.wait_and_process();
+    }
+    virtual bool pure_poll() override final {
+        return poll(); // actually performs work, but triggers no user continuations, so okay
+    }
+    virtual bool try_enter_interrupt_mode() override {
+        // Since we'll be sleeping in epoll, no need to do anything
+        // for interrupt mode.
+        return true;
+    }
+    virtual void exit_interrupt_mode() override final {
+    }
+};
+
+
+
+inline
+future<size_t> pollable_fd::read_some(char* buffer, size_t size) {
+    return engine().read_some(*_s, buffer, size);
+}
+
+inline
+future<size_t> pollable_fd::read_some(uint8_t* buffer, size_t size) {
+    return engine().read_some(*_s, buffer, size);
+}
+
+inline
+future<size_t> pollable_fd::read_some(const std::vector<iovec>& iov) {
+    return engine().read_some(*_s, iov);
+}
+
+inline
+future<> pollable_fd::write_all(const char* buffer, size_t size) {
+    return engine().write_all(*_s, buffer, size);
+}
+
+inline
+future<> pollable_fd::write_all(const uint8_t* buffer, size_t size) {
+    return engine().write_all(*_s, buffer, size);
+}
+
+inline
+future<size_t> pollable_fd::write_some(net::packet& p) {
+    return engine().writeable(*_s).then([this, &p] () mutable {
+        static_assert(offsetof(iovec, iov_base) == offsetof(net::fragment, base) &&
+            sizeof(iovec::iov_base) == sizeof(net::fragment::base) &&
+            offsetof(iovec, iov_len) == offsetof(net::fragment, size) &&
+            sizeof(iovec::iov_len) == sizeof(net::fragment::size) &&
+            alignof(iovec) == alignof(net::fragment) &&
+            sizeof(iovec) == sizeof(net::fragment)
+            , "net::fragment and iovec should be equivalent");
+
+        iovec* iov = reinterpret_cast<iovec*>(p.fragment_array());
+        msghdr mh = {};
+        mh.msg_iov = iov;
+        mh.msg_iovlen = p.nr_frags();
+        auto r = get_file_desc().sendmsg(&mh, MSG_NOSIGNAL);
+        if (!r) {
+            return write_some(p);
+        }
+        if (size_t(*r) == p.len()) {
+            _s->speculate_epoll(EPOLLOUT);
+        }
+        return make_ready_future<size_t>(*r);
+    });
+}
+
+inline
+future<> pollable_fd::write_all(net::packet& p) {
+    return write_some(p).then([this, &p] (size_t size) {
+        if (p.len() == size) {
+            return make_ready_future<>();
+        }
+        p.trim_front(size);
+        return write_all(p);
+    });
+}
+
+inline
+future<> pollable_fd::readable() {
+    return engine().readable(*_s);
+}
+
+inline
+future<> pollable_fd::writeable() {
+    return engine().writeable(*_s);
+}
+
+inline
+void
+pollable_fd::abort_reader(std::exception_ptr ex) {
+    engine().abort_reader(*_s, std::move(ex));
+}
+
+inline
+void
+pollable_fd::abort_writer(std::exception_ptr ex) {
+    engine().abort_writer(*_s, std::move(ex));
+}
+
+inline
+future<pollable_fd, socket_address> pollable_fd::accept() {
+    return engine().accept(*_s);
+}
+
+inline
+future<size_t> pollable_fd::recvmsg(struct msghdr *msg) {
+    return engine().readable(*_s).then([this, msg] {
+        auto r = get_file_desc().recvmsg(msg, 0);
+        if (!r) {
+            return recvmsg(msg);
+        }
+        // We always speculate here to optimize for throughput in a workload
+        // with multiple outstanding requests. This way the caller can consume
+        // all messages without resorting to epoll. However this adds extra
+        // recvmsg() call when we hit the empty queue condition, so it may
+        // hurt request-response workload in which the queue is empty when we
+        // initially enter recvmsg(). If that turns out to be a problem, we can
+        // improve speculation by using recvmmsg().
+        _s->speculate_epoll(EPOLLIN);
+        return make_ready_future<size_t>(*r);
+    });
+};
+
+inline
+future<size_t> pollable_fd::sendmsg(struct msghdr* msg) {
+    return engine().writeable(*_s).then([this, msg] () mutable {
+        auto r = get_file_desc().sendmsg(msg, 0);
+        if (!r) {
+            return sendmsg(msg);
+        }
+        // For UDP this will always speculate. We can't know if there's room
+        // or not, but most of the time there should be so the cost of mis-
+        // speculation is amortized.
+        if (size_t(*r) == iovec_len(msg->msg_iov, msg->msg_iovlen)) {
+            _s->speculate_epoll(EPOLLOUT);
+        }
+        return make_ready_future<size_t>(*r);
+    });
+}
+
+inline
+future<size_t> pollable_fd::sendto(socket_address addr, const void* buf, size_t len) {
+    return engine().writeable(*_s).then([this, buf, len, addr] () mutable {
+        auto r = get_file_desc().sendto(addr, buf, len, 0);
+        if (!r) {
+            return sendto(std::move(addr), buf, len);
+        }
+        // See the comment about speculation in sendmsg().
+        if (size_t(*r) == len) {
+            _s->speculate_epoll(EPOLLOUT);
+        }
+        return make_ready_future<size_t>(*r);
+    });
+}
+
+
+void reactor::start_aio_eventfd_loop() {
+    if (!_aio_eventfd) {
+        return;
+    }
+    future<> loop_done = repeat([this] {
+        return _aio_eventfd->readable().then([this] {
+            char garbage[8];
+            ::read(_aio_eventfd->get_fd(), garbage, 8); // totally uninteresting
+            return _stopping ? stop_iteration::yes : stop_iteration::no;
+        });
+    });
+    // must use make_lw_shared, because at_exit expects a copyable function
+    at_exit([loop_done = make_lw_shared(std::move(loop_done))] {
+        return std::move(*loop_done);
+    });
+}
+
+/* not yet implemented for OSv. TODO: do the notification like we do class smp. */
+
+
+readable_eventfd writeable_eventfd::read_side() {
+    return readable_eventfd(_fd.dup());
+}
+
+file_desc writeable_eventfd::try_create_eventfd(size_t initial) {
+    assert(size_t(int(initial)) == initial);
+    return file_desc::eventfd(initial, EFD_CLOEXEC);
+}
+
+void writeable_eventfd::signal(size_t count) {
+    uint64_t c = count;
+    auto r = _fd.write(&c, sizeof(c));
+    assert(r == sizeof(c));
+}
+
+writeable_eventfd readable_eventfd::write_side() {
+    return writeable_eventfd(_fd.get_file_desc().dup());
+}
+
+file_desc readable_eventfd::try_create_eventfd(size_t initial) {
+    assert(size_t(int(initial)) == initial);
+    return file_desc::eventfd(initial, EFD_CLOEXEC | EFD_NONBLOCK);
+}
+
+future<size_t> readable_eventfd::wait() {
+    return engine().readable(*_fd._s).then([this] {
+        uint64_t count;
+        int r = ::read(_fd.get_fd(), &count, sizeof(count));
+        assert(r == sizeof(count));
+        return make_ready_future<size_t>(count);
+    });
+}
 
 
 /// \brief Creates a \ref future in an available, failed state.
@@ -7099,7 +8276,7 @@ future<> repeat(AsyncAction&& action) {
 
         promise<> p;
         auto f = p.get_future();
-        schedule(make_task([action = std::forward<AsyncAction>(action), p = std::move(p)]() mutable {
+        schedule_normal(make_task([action = std::forward<AsyncAction>(action), p = std::move(p)]() mutable {
             repeat(std::forward<AsyncAction>(action)).forward_to(std::move(p));
         }));
         return f;
@@ -8557,7 +9734,7 @@ static decltype(auto) install_signal_handler_stack() {
             assert(r == 0);
         } catch (...) {
             mem.release(); // We failed to restore previous stack, must leak it.
-            std::cout<<< "Failed to restore previous signal stack" << std::endl;
+            // std::cout<<< "Failed to restore previous signal stack" << std::endl;
         }
     });
 }
@@ -11195,7 +12372,46 @@ output_stream<CharType>::close() {
     });
 }
 
+#ifndef HAVE_OSV
+thread_pool::thread_pool(sstring name) : _worker_thread([this, name] { work(name); }), _notify(pthread_self()) {
+    engine()._signals.handle_signal(SIGUSR1, [this] { inter_thread_wq.complete(); });
+}
 
+void thread_pool::work(sstring name) {
+    pthread_setname_np(pthread_self(), name.c_str());
+    sigset_t mask;
+    sigfillset(&mask);
+    auto r = ::pthread_sigmask(SIG_BLOCK, &mask, NULL);
+    throw_pthread_error(r);
+    std::array<syscall_work_queue::work_item*, syscall_work_queue::queue_length> tmp_buf;
+    while (true) {
+        uint64_t count;
+        auto r = ::read(inter_thread_wq._start_eventfd.get_read_fd(), &count, sizeof(count));
+        assert(r == sizeof(count));
+        if (_stopped.load(std::memory_order_relaxed)) {
+            break;
+        }
+        auto end = tmp_buf.data();
+        inter_thread_wq._pending.consume_all([&] (syscall_work_queue::work_item* wi) {
+            *end++ = wi;
+        });
+        for (auto p = tmp_buf.data(); p != end; ++p) {
+            auto wi = *p;
+            wi->process();
+            inter_thread_wq._completed.push(wi);
+        }
+        if (_main_thread_idle.load(std::memory_order_seq_cst)) {
+            pthread_kill(_notify, SIGUSR1);
+        }
+    }
+}
+
+thread_pool::~thread_pool() {
+    _stopped.store(true, std::memory_order_relaxed);
+    inter_thread_wq._start_eventfd.signal(1);
+    _worker_thread.join();
+}
+#endif
 
 
 

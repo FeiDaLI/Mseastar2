@@ -1,378 +1,280 @@
 g++ -Wall -std=c++20 -g -Iinclude -pthread -MMD -c test/new_tests/smp_test.cc -o build/test/new_tests/smp_test.o
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all9.hh: In function ‘size_t iovec_len(const iovec*, size_t)’:
+include/../include/app/../future/future_all9.hh:75:22: error: invalid use of incomplete type ‘struct iovec’
+   75 |     auto end = begin + len;
+      |                ~~~~~~^~~~~
+In file included from include/../include/app/../future/future_all9.hh:48,
+                 from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+/usr/include/libaio.h:35:8: note: forward declaration of ‘struct iovec’
+   35 | struct iovec;
+      |        ^~~~~
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all9.hh:77:16: error: cannot increment a pointer to incomplete type ‘const iovec’
+   77 |         ret += begin++->iov_len;
+      |                ^~~~~
+include/../include/app/../future/future_all9.hh:77:23: error: invalid use of incomplete type ‘const struct iovec’
+   77 |         ret += begin++->iov_len;
+      |                       ^~
+In file included from include/../include/app/../future/future_all9.hh:48,
+                 from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+/usr/include/libaio.h:35:8: note: forward declaration of ‘struct iovec’
+   35 | struct iovec;
+      |        ^~~~~
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all9.hh: At global scope:
+include/../include/app/../future/future_all9.hh:2887:33: error: expected nested-name-specifier before ‘tuple_map_types’
+ 2887 |     using input_type = typename tuple_map_types<internal::wrap_for_es, ArgsTuple>::type;
+      |                                 ^~~~~~~~~~~~~~~
+include/../include/app/../future/future_all9.hh:2890:9: error: ‘input_type’ does not name a type
+ 2890 |         input_type _in;
+      |         ^~~~~~~~~~
+include/../include/app/../future/future_all9.hh:2904:17: error: ‘input_type’ has not been declared
+ 2904 |     auto unwrap(input_type&& in) {
+      |                 ^~~~~~~~~~
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all9.hh:2931:49: error: ‘input_type’ was not declared in this scope
+ 2931 |     GCC6_CONCEPT(requires std::is_constructible<input_type, Args...>::value)
+      |                                                 ^~~~~~~~~~
+include/../include/app/../future/future_all9.hh:108:28: note: in definition of macro ‘GCC6_CONCEPT’
+  108 | #define GCC6_CONCEPT(x...) x
+      |                            ^
+include/../include/app/../future/future_all9.hh:2931:68: error: template argument 1 is invalid
+ 2931 |     GCC6_CONCEPT(requires std::is_constructible<input_type, Args...>::value)
+      |                                                                    ^
+include/../include/app/../future/future_all9.hh:108:28: note: in definition of macro ‘GCC6_CONCEPT’
+  108 | #define GCC6_CONCEPT(x...) x
+      |                            ^
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all9.hh: In constructor ‘concrete_execution_stage<Function, ReturnType, ArgsTuple>::work_item::work_item(Args&& ...)’:
+include/../include/app/../future/future_all9.hh:2894:37: error: class ‘concrete_execution_stage<Function, ReturnType, ArgsTuple>::work_item’ does not have any field named ‘_in’
+ 2894 |         work_item(Args&&... args) : _in(std::forward<Args>(args)...) { }
+      |                                     ^~~
+include/../include/app/../future/future_all9.hh: In constructor ‘execution_stage::execution_stage(const sstring&)’:
+include/../include/app/../future/future_all9.hh:2965:17: error: ‘defer’ was not declared in this scope
+ 2965 |     auto undo = defer([&] { internal::execution_stage_manager::get().unregister_execution_stage(*this); });
+      |                 ^~~~~
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
 include/../include/app/../future/future_all9.hh: In static member function ‘static std::unique_ptr<net::packet::impl> net::packet::impl::copy(net::packet::impl*, size_t)’:
-include/../include/app/../future/future_all9.hh:2975:29: warning: moving a local object in a return statement prevents copy elision [-Wpessimizing-move]
- 2975 |             return std::move(n);
+include/../include/app/../future/future_all9.hh:3531:29: warning: moving a local object in a return statement prevents copy elision [-Wpessimizing-move]
+ 3531 |             return std::move(n);
       |                    ~~~~~~~~~^~~
-include/../include/app/../future/future_all9.hh:2975:29: note: remove ‘std::move’ call
+include/../include/app/../future/future_all9.hh:3531:29: note: remove ‘std::move’ call
 include/../include/app/../future/future_all9.hh: In static member function ‘static file_desc file_desc::temporary(std::string)’:
-include/../include/app/../future/future_all9.hh:3725:9: warning: unused variable ‘r’ [-Wunused-variable]
- 3725 |     int r = ::unlink(templat.data());
+include/../include/app/../future/future_all9.hh:4281:9: warning: unused variable ‘r’ [-Wunused-variable]
+ 4281 |     int r = ::unlink(templat.data());
       |         ^
 include/../include/app/../future/future_all9.hh: In static member function ‘static io_priority_class io_queue::register_one_priority_class(std::string, uint32_t)’:
-include/../include/app/../future/future_all9.hh:4434:29: warning: moving a local object in a return statement prevents copy elision [-Wpessimizing-move]
- 4434 |             return std::move(p);
+include/../include/app/../future/future_all9.hh:4990:29: warning: moving a local object in a return statement prevents copy elision [-Wpessimizing-move]
+ 4990 |             return std::move(p);
       |                    ~~~~~~~~~^~~
-include/../include/app/../future/future_all9.hh:4434:29: note: remove ‘std::move’ call
+include/../include/app/../future/future_all9.hh:4990:29: note: remove ‘std::move’ call
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh: At global scope:
-include/../include/app/../future/future_all9.hh:4640:20: error: ‘scattered_message’ has not been declared
- 4640 |     future<> write(scattered_message<char_type> msg);
-      |                    ^~~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:4640:37: error: expected ‘,’ or ‘...’ before ‘<’ token
- 4640 |     future<> write(scattered_message<char_type> msg);
-      |                                     ^
 include/../include/app/../future/future_all9.hh: In function ‘std::ostream& operator<<(std::ostream&, ipv4_addr)’:
-include/../include/app/../future/future_all9.hh:4744:1: warning: no return statement in function returning non-void [-Wreturn-type]
- 4744 | }
+include/../include/app/../future/future_all9.hh:5306:1: warning: no return statement in function returning non-void [-Wreturn-type]
+ 5306 | }
       | ^
-include/../include/app/../future/future_all9.hh: At global scope:
-include/../include/app/../future/future_all9.hh:4882:13: error: ‘socket’ does not name a type
- 4882 |     virtual socket socket() = 0;
-      |             ^~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘future<connected_socket> network_stack::connect(socket_address, socket_address, transport)’:
-include/../include/app/../future/future_all9.hh:4880:23: error: too few arguments to function ‘int socket(int, int, int)’
- 4880 |         return socket().connect(sa, local, proto);
-      |                       ^
-In file included from include/../include/app/../future/future_all9.hh:2631,
-                 from include/../include/app/app-template.hh:27,
-                 from test/new_tests/smp_test.cc:2:
-/usr/include/x86_64-linux-gnu/sys/socket.h:102:12: note: declared here
-  102 | extern int socket (int __domain, int __type, int __protocol) __THROW;
-      |            ^~~~~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
 include/../include/app/../future/future_all9.hh: At global scope:
-include/../include/app/../future/future_all9.hh:4986:5: error: ‘writeable_eventfd’ does not name a type
- 4986 |     writeable_eventfd write_side();
-      |     ^~~~~~~~~~~~~~~~~
-In file included from /usr/include/boost/lockfree/spsc_queue.hpp:28,
-                 from include/../include/app/../future/future_all9.hh:5016,
-                 from include/../include/app/app-template.hh:27,
-                 from test/new_tests/smp_test.cc:2:
-/usr/include/boost/lockfree/detail/parameter.hpp: In instantiation of ‘struct boost::lockfree::detail::extract_allocator<boost::parameter::aux::arg_list<boost::lockfree::capacity<128>, boost::parameter::aux::empty_arg_list>, syscall_work_queue::work_item*>’:
-/usr/include/boost/lockfree/spsc_queue.hpp:650:48:   required from ‘struct boost::lockfree::detail::make_ringbuffer<syscall_work_queue::work_item*, boost::lockfree::capacity<128> >’
-/usr/include/boost/lockfree/spsc_queue.hpp:687:7:   required from ‘class boost::lockfree::spsc_queue<syscall_work_queue::work_item*, boost::lockfree::capacity<128> >’
-include/../include/app/../future/future_all9.hh:5024:14:   required from here
-/usr/include/boost/lockfree/detail/parameter.hpp:59:67: error: no class template named ‘rebind’ in ‘boost::lockfree::detail::extract_allocator<boost::parameter::aux::arg_list<boost::lockfree::capacity<128>, boost::parameter::aux::empty_arg_list>, syscall_work_queue::work_item*>::allocator_arg’ {aka ‘class std::allocator<syscall_work_queue::work_item*>’}
-   59 |         typedef typename allocator_arg::template rebind<T>::other type;
-      |                                                                   ^~~~
-In file included from include/../include/app/app-template.hh:27,
-                 from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:5318:12: error: ‘file’ was not declared in this scope
- 5318 |     future<file> open_file_dma(std::string name, open_flags flags, file_open_options options = {});
-      |            ^~~~
-include/../include/app/../future/future_all9.hh:5318:16: error: template argument 1 is invalid
- 5318 |     future<file> open_file_dma(std::string name, open_flags flags, file_open_options options = {});
-      |                ^
-include/../include/app/../future/future_all9.hh:5318:50: error: ‘open_flags’ has not been declared
- 5318 |     future<file> open_file_dma(std::string name, open_flags flags, file_open_options options = {});
-      |                                                  ^~~~~~~~~~
-include/../include/app/../future/future_all9.hh:5318:68: error: ‘file_open_options’ has not been declared
- 5318 |     future<file> open_file_dma(std::string name, open_flags flags, file_open_options options = {});
-      |                                                                    ^~~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:5319:12: error: ‘file’ was not declared in this scope
- 5319 |     future<file> open_directory(std::string name);
-      |            ^~~~
-include/../include/app/../future/future_all9.hh:5319:16: error: template argument 1 is invalid
- 5319 |     future<file> open_directory(std::string name);
-      |                ^
-include/../include/app/../future/future_all9.hh:5322:26: error: ‘directory_entry_type’ was not declared in this scope
- 5322 |     future<std::optional<directory_entry_type>> cfile_type(std::string name);
-      |                          ^~~~~~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:5322:26: error: template argument 1 is invalid
-include/../include/app/../future/future_all9.hh:5322:46: error: template argument 1 is invalid
- 5322 |     future<std::optional<directory_entry_type>> cfile_type(std::string name);
-      |                                              ^~
-include/../include/app/../future/future_all9.hh:5325:12: error: ‘fs_type’ was not declared in this scope; did you mean ‘isctype’?
- 5325 |     future<fs_type> file_system_at(std::string pathname);
-      |            ^~~~~~~
-      |            isctype
-include/../include/app/../future/future_all9.hh:5325:19: error: template argument 1 is invalid
- 5325 |     future<fs_type> file_system_at(std::string pathname);
-      |                   ^
-include/../include/app/../future/future_all9.hh:5336:22: error: ‘template<class Func> future<io_event> reactor::submit_io(Func)’ cannot be overloaded with ‘template<class Func> future<io_event> reactor::submit_io(Func)’
- 5336 |     future<io_event> submit_io(Func prepare_io);
+include/../include/app/../future/future_all9.hh:6388:22: error: ‘template<class Func> future<io_event> reactor::submit_io(Func)’ cannot be overloaded with ‘template<class Func> future<io_event> reactor::submit_io(Func)’
+ 6388 |     future<io_event> submit_io(Func prepare_io);
       |                      ^~~~~~~~~
-include/../include/app/../future/future_all9.hh:5235:22: note: previous declaration ‘template<class Func> future<io_event> reactor::submit_io(Func)’
- 5235 |     future<io_event> submit_io(Func prepare_io);
+include/../include/app/../future/future_all9.hh:6303:22: note: previous declaration ‘template<class Func> future<io_event> reactor::submit_io(Func)’
+ 6303 |     future<io_event> submit_io(Func prepare_io);
       |                      ^~~~~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘future<> reactor_backend_epoll::get_epoll_future(pollable_fd_state&, promise<> pollable_fd_state::*, int)’:
-include/../include/app/../future/future_all9.hh:5409:18: error: ‘struct reactor’ has no member named ‘start_epoll’
- 5409 |         engine().start_epoll();
-      |                  ^~~~~~~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘virtual bool reactor::io_pollfn::poll()’:
-include/../include/app/../future/future_all9.hh:5522:19: error: ‘struct reactor’ has no member named ‘process_io’
- 5522 |         return _r.process_io();
-      |                   ^~~~~~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘virtual bool reactor::signal_pollfn::try_enter_interrupt_mode()’:
-include/../include/app/../future/future_all9.hh:5555:56: error: ‘struct reactor’ has no member named ‘_active_sigmask’
- 5555 |         ::pthread_sigmask(SIG_SETMASK, &block_all, &_r._active_sigmask);
-      |                                                        ^~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘virtual void reactor::signal_pollfn::exit_interrupt_mode()’:
-include/../include/app/../future/future_all9.hh:5564:44: error: ‘struct reactor’ has no member named ‘_active_sigmask’
- 5564 |         ::pthread_sigmask(SIG_SETMASK, &_r._active_sigmask, nullptr);
-      |                                            ^~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘virtual bool reactor::batch_flush_pollfn::poll()’:
-include/../include/app/../future/future_all9.hh:5573:19: error: ‘struct reactor’ has no member named ‘flush_tcp_batches’
- 5573 |         return _r.flush_tcp_batches();
-      |                   ^~~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘virtual bool reactor::aio_batch_submit_pollfn::poll()’:
-include/../include/app/../future/future_all9.hh:5593:19: error: ‘struct reactor’ has no member named ‘flush_pending_aio’
- 5593 |         return _r.flush_pending_aio();
-      |                   ^~~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘virtual bool reactor::smp_pollfn::poll()’:
-include/../include/app/../future/future_all9.hh:5682:21: error: incomplete type ‘smp’ used in nested name specifier
- 5682 |         return smp::poll_queues();
-      |                     ^~~~~~~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘virtual bool reactor::smp_pollfn::pure_poll()’:
-include/../include/app/../future/future_all9.hh:5685:21: error: incomplete type ‘smp’ used in nested name specifier
- 5685 |         return smp::pure_poll_queues();
-      |                     ^~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘virtual bool reactor::smp_pollfn::try_enter_interrupt_mode()’:
-include/../include/app/../future/future_all9.hh:5694:9: error: ‘systemwide_memory_barrier’ was not declared in this scope
- 5694 |         systemwide_memory_barrier();
-      |         ^~~~~~~~~~~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh: At global scope:
-include/../include/app/../future/future_all9.hh:5709:5: error: ‘internal’ does not name a type
- 5709 |     internal::execution_stage_manager& _esm;
-      |     ^~~~~~~~
-include/../include/app/../future/future_all9.hh: In constructor ‘reactor::execution_stage_pollfn::execution_stage_pollfn()’:
-include/../include/app/../future/future_all9.hh:5711:32: error: class ‘reactor::execution_stage_pollfn’ does not have any field named ‘_esm’
- 5711 |     execution_stage_pollfn() : _esm(internal::execution_stage_manager::get()) { }
-      |                                ^~~~
-include/../include/app/../future/future_all9.hh:5711:37: error: ‘internal’ has not been declared
- 5711 |     execution_stage_pollfn() : _esm(internal::execution_stage_manager::get()) { }
-      |                                     ^~~~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘virtual bool reactor::execution_stage_pollfn::poll()’:
-include/../include/app/../future/future_all9.hh:5714:16: error: ‘_esm’ was not declared in this scope
- 5714 |         return _esm.flush();
-      |                ^~~~
-include/../include/app/../future/future_all9.hh: In member function ‘virtual bool reactor::execution_stage_pollfn::pure_poll()’:
-include/../include/app/../future/future_all9.hh:5717:16: error: ‘_esm’ was not declared in this scope
- 5717 |         return _esm.poll();
-      |                ^~~~
-include/../include/app/../future/future_all9.hh: In member function ‘virtual bool reactor::epoll_pollfn::poll()’:
-include/../include/app/../future/future_all9.hh:5760:19: error: ‘struct reactor’ has no member named ‘wait_and_process’
- 5760 |         return _r.wait_and_process();
-      |                   ^~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘future<> pollable_fd::readable()’:
-include/../include/app/../future/future_all9.hh:5840:21: error: ‘struct reactor’ has no member named ‘readable’
- 5840 |     return engine().readable(*_s);
-      |                     ^~~~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘void pollable_fd::abort_reader(std::__exception_ptr::exception_ptr)’:
-include/../include/app/../future/future_all9.hh:5851:14: error: ‘struct reactor’ has no member named ‘abort_reader’
- 5851 |     engine().abort_reader(*_s, std::move(ex));
-      |              ^~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘void pollable_fd::abort_writer(std::__exception_ptr::exception_ptr)’:
-include/../include/app/../future/future_all9.hh:5857:14: error: ‘struct reactor’ has no member named ‘abort_writer’
- 5857 |     engine().abort_writer(*_s, std::move(ex));
-      |              ^~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘future<long unsigned int> pollable_fd::recvmsg(msghdr*)’:
-include/../include/app/../future/future_all9.hh:5867:21: error: ‘struct reactor’ has no member named ‘readable’
- 5867 |     return engine().readable(*_s).then([this, msg] {
-      |                     ^~~~~~~~
+include/../include/app/../future/future_all9.hh:6399:14: error: ‘future<> reactor::writeable(pollable_fd_state&)’ cannot be overloaded with ‘future<> reactor::writeable(pollable_fd_state&)’
+ 6399 |     future<> writeable(pollable_fd_state& fd) {
+      |              ^~~~~~~~~
+include/../include/app/../future/future_all9.hh:6381:14: note: previous declaration ‘future<> reactor::writeable(pollable_fd_state&)’
+ 6381 |     future<> writeable(pollable_fd_state& fd) {
+      |              ^~~~~~~~~
+include/../include/app/../future/future_all9.hh:6414:10: error: ‘void reactor::enable_timer(std::chrono::_V2::steady_clock::time_point)’ cannot be overloaded with ‘void reactor::enable_timer(std::chrono::_V2::steady_clock::time_point)’
+ 6414 |     void enable_timer(steady_clock_type::time_point when);
+      |          ^~~~~~~~~~~~
+include/../include/app/../future/future_all9.hh:6264:10: note: previous declaration ‘void reactor::enable_timer(std::chrono::_V2::steady_clock::time_point)’
+ 6264 |     void enable_timer(steady_clock_type::time_point when);
+      |          ^~~~~~~~~~~~
+include/../include/app/../future/future_all9.hh: In member function ‘void reactor::start_epoll()’:
+include/../include/app/../future/future_all9.hh:6524:69: error: no matching function for call to ‘reactor::poller::poller(std::_MakeUniq<reactor::epoll_pollfn>::__single_object)’
+ 6524 |         _epoll_poller = poller(std::make_unique<epoll_pollfn>(*this));
+      |                                                                     ^
+include/../include/app/../future/future_all9.hh:6223:9: note: candidate: ‘reactor::poller::poller(reactor::poller&&)’
+ 6223 |         poller(poller&& x);
+      |         ^~~~~~
+include/../include/app/../future/future_all9.hh:6223:25: note:   no known conversion for argument 1 from ‘std::_MakeUniq<reactor::epoll_pollfn>::__single_object’ {aka ‘std::unique_ptr<reactor::epoll_pollfn, std::default_delete<reactor::epoll_pollfn> >’} to ‘reactor::poller&&’
+ 6223 |         poller(poller&& x);
+      |                ~~~~~~~~~^
+include/../include/app/../future/future_all9.hh:6218:9: note: candidate: ‘reactor::poller::poller(std::unique_ptr<pollfn>)’
+ 6218 |         poller(std::unique_ptr<pollfn> fn)
+      |         ^~~~~~
+include/../include/app/../future/future_all9.hh:6218:40: note:   no known conversion for argument 1 from ‘unique_ptr<reactor::epoll_pollfn,default_delete<reactor::epoll_pollfn>>’ to ‘unique_ptr<pollfn,default_delete<pollfn>>’
+ 6218 |         poller(std::unique_ptr<pollfn> fn)
+      |                ~~~~~~~~~~~~~~~~~~~~~~~~^~
 include/../include/app/../future/future_all9.hh: In lambda function:
-include/../include/app/../future/future_all9.hh:5894:27: error: ‘iovec_len’ was not declared in this scope
- 5894 |         if (size_t(*r) == iovec_len(msg->msg_iov, msg->msg_iovlen)) {
-      |                           ^~~~~~~~~
-include/../include/app/../future/future_all9.hh: In lambda function:
-include/../include/app/../future/future_all9.hh:5925:32: error: ‘stop_iteration’ has not been declared
- 5925 |             return _stopping ? stop_iteration::yes : stop_iteration::no;
+include/../include/app/../future/future_all9.hh:7656:32: error: ‘stop_iteration’ has not been declared
+ 7656 |             return _stopping ? stop_iteration::yes : stop_iteration::no;
       |                                ^~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:5925:54: error: ‘stop_iteration’ has not been declared
- 5925 |             return _stopping ? stop_iteration::yes : stop_iteration::no;
+include/../include/app/../future/future_all9.hh:7656:54: error: ‘stop_iteration’ has not been declared
+ 7656 |             return _stopping ? stop_iteration::yes : stop_iteration::no;
       |                                                      ^~~~~~~~~~~~~~
 include/../include/app/../future/future_all9.hh: In lambda function:
-include/../include/app/../future/future_all9.hh:5926:10: error: no matching function for call to ‘future<>::then(reactor::start_aio_eventfd_loop()::<lambda()>::<lambda()>)’
- 5926 |         });
+include/../include/app/../future/future_all9.hh:7657:10: error: no matching function for call to ‘future<>::then(reactor::start_aio_eventfd_loop()::<lambda()>::<lambda()>)’
+ 7657 |         });
       |          ^
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:2339:5: note: candidate: ‘template<class Func, class Result>  requires  CanApply<Func, T ...> Result future<T>::then(Func&&) [with Func = Func; Result = Result; T = {}]’
- 2339 |     then(Func&& func) noexcept {
+include/../include/app/../future/future_all9.hh:2418:5: note: candidate: ‘template<class Func, class Result>  requires  CanApply<Func, T ...> Result future<T>::then(Func&&) [with Func = Func; Result = Result; T = {}]’
+ 2418 |     then(Func&& func) noexcept {
       |     ^~~~
-include/../include/app/../future/future_all9.hh:2339:5: note:   template argument deduction/substitution failed:
-include/../include/app/../future/future_all9.hh:2336:30: error: no type named ‘type’ in ‘class std::result_of<reactor::start_aio_eventfd_loop()::<lambda()>::<lambda()>()>’
- 2336 |     template <typename Func, typename Result = futurize_t<std::result_of_t<Func(T&&...)>>>
+include/../include/app/../future/future_all9.hh:2418:5: note:   template argument deduction/substitution failed:
+include/../include/app/../future/future_all9.hh:2415:30: error: no type named ‘type’ in ‘class std::result_of<reactor::start_aio_eventfd_loop()::<lambda()>::<lambda()>()>’
+ 2415 |     template <typename Func, typename Result = futurize_t<std::result_of_t<Func(T&&...)>>>
       |                              ^~~~~~~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
 include/../include/app/../future/future_all9.hh: In member function ‘void reactor::start_aio_eventfd_loop()’:
-include/../include/app/../future/future_all9.hh:5921:26: error: ‘repeat’ was not declared in this scope
- 5921 |     future<> loop_done = repeat([this] {
+include/../include/app/../future/future_all9.hh:7652:26: error: ‘repeat’ was not declared in this scope
+ 7652 |     future<> loop_done = repeat([this] {
       |                          ^~~~~~
-include/../include/app/../future/future_all9.hh: At global scope:
-include/../include/app/../future/future_all9.hh:5952:19: error: no declaration matches ‘writeable_eventfd readable_eventfd::write_side()’
- 5952 | writeable_eventfd readable_eventfd::write_side() {
-      |                   ^~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:5952:19: note: no functions named ‘writeable_eventfd readable_eventfd::write_side()’
-In file included from include/../include/app/app-template.hh:27,
-                 from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:4981:7: note: ‘class readable_eventfd’ defined here
- 4981 | class readable_eventfd {
-      |       ^~~~~~~~~~~~~~~~
-In file included from include/../include/app/app-template.hh:27,
-                 from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh: In member function ‘future<long unsigned int> readable_eventfd::wait()’:
-include/../include/app/../future/future_all9.hh:5962:21: error: ‘struct reactor’ has no member named ‘readable’
- 5962 |     return engine().readable(*_fd._s).then([this] {
-      |                     ^~~~~~~~
-include/../include/app/../future/future_all9.hh: In member function ‘void reactor::block_notifier(int)’:
-include/../include/app/../future/future_all9.hh:5972:27: error: ‘struct reactor’ has no member named ‘_tasks_processed_stalled’
- 5972 |     auto steps = engine()._tasks_processed_stalled.load(std::memory_order_relaxed);
-      |                           ^~~~~~~~~~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:5975:5: error: ‘backtrace_buffer’ was not declared in this scope
- 5975 |     backtrace_buffer buf;
-      |     ^~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:5976:5: error: ‘buf’ was not declared in this scope
- 5976 |     buf.append("Reactor stalled for ");
-      |     ^~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
 include/../include/app/../future/future_all9.hh: In member function ‘void reactor::enable_timer(std::chrono::_V2::steady_clock::time_point)’:
-include/../include/app/../future/future_all9.hh:7743:10: warning: unused variable ‘ret’ [-Wunused-variable]
- 7743 |     auto ret = timer_settime(_steady_clock_timer, TIMER_ABSTIME, &its, NULL);
+include/../include/app/../future/future_all9.hh:8920:10: warning: unused variable ‘ret’ [-Wunused-variable]
+ 8920 |     auto ret = timer_settime(_steady_clock_timer, TIMER_ABSTIME, &its, NULL);
       |          ^~~
 include/../include/app/../future/future_all9.hh: In member function ‘void thread_context::setup()’:
-include/../include/app/../future/future_all9.hh:8347:10: warning: unused variable ‘r’ [-Wunused-variable]
- 8347 |     auto r = getcontext(&initial_context);//保存当前上下文到initial_context中.
+include/../include/app/../future/future_all9.hh:9524:10: warning: unused variable ‘r’ [-Wunused-variable]
+ 9524 |     auto r = getcontext(&initial_context);//保存当前上下文到initial_context中.
       |          ^
-include/../include/app/../future/future_all9.hh: In lambda function:
-include/../include/app/../future/future_all9.hh:8560:24: error: expected primary-expression before ‘<’ token
- 8560 |             std::cout<<< "Failed to restore previous signal stack" << std::endl;
-      |                        ^
-include/../include/app/../future/future_all9.hh:8560:68: error: invalid operands of types ‘const char [40]’ and ‘<unresolved overloaded function type>’ to binary ‘operator<<’
- 8560 |             std::cout<<< "Failed to restore previous signal stack" << std::endl;
-      |                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~
 include/../include/app/../future/future_all9.hh: In function ‘decltype(auto) install_signal_handler_stack()’:
-include/../include/app/../future/future_all9.hh:8553:12: error: ‘defer’ was not declared in this scope
- 8553 |     return defer([mem = std::move(mem), prev_stack] () mutable {
+include/../include/app/../future/future_all9.hh:9730:12: error: ‘defer’ was not declared in this scope
+ 9730 |     return defer([mem = std::move(mem), prev_stack] () mutable {
       |            ^~~~~
 include/../include/app/../future/future_all9.hh: In member function ‘int reactor::run()’:
-include/../include/app/../future/future_all9.hh:8650:46: error: cannot convert ‘void (reactor::*)(int)’ to ‘__sighandler_t’ {aka ‘void (*)(int)’} in assignment
- 8650 |     sa_block_notifier.sa_handler = &reactor::block_notifier;
+include/../include/app/../future/future_all9.hh:9827:46: error: cannot convert ‘void (reactor::*)(int)’ to ‘__sighandler_t’ {aka ‘void (*)(int)’} in assignment
+ 9827 |     sa_block_notifier.sa_handler = &reactor::block_notifier;
       |                                              ^~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:8648:11: warning: unused variable ‘task_quote_itimerspec’ [-Wunused-variable]
- 8648 |     auto& task_quote_itimerspec = its;
+include/../include/app/../future/future_all9.hh:9825:11: warning: unused variable ‘task_quote_itimerspec’ [-Wunused-variable]
+ 9825 |     auto& task_quote_itimerspec = its;
       |           ^~~~~~~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:8654:10: warning: unused variable ‘idle’ [-Wunused-variable]
- 8654 |     bool idle = false;
+include/../include/app/../future/future_all9.hh:9831:10: warning: unused variable ‘idle’ [-Wunused-variable]
+ 9831 |     bool idle = false;
       |          ^~~~
 include/../include/app/../future/future_all9.hh: In member function ‘future<> reactor::run_exit_tasks()’:
-include/../include/app/../future/future_all9.hh:8745:1: warning: no return statement in function returning non-void [-Wreturn-type]
- 8745 | }
+include/../include/app/../future/future_all9.hh:9922:1: warning: no return statement in function returning non-void [-Wreturn-type]
+ 9922 | }
       | ^
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
 include/../include/app/../future/future_all9.hh: In constructor ‘reactor::reactor(unsigned int)’:
-include/../include/app/../future/future_all9.hh:5239:18: warning: ‘reactor::_io_context’ will be initialized after [-Wreorder]
- 5239 |     io_context_t _io_context;
+include/../include/app/../future/future_all9.hh:6353:18: warning: ‘reactor::_io_context’ will be initialized after [-Wreorder]
+ 6353 |     io_context_t _io_context;
       |                  ^~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:5236:15: warning:   ‘semaphore reactor::_io_context_available’ [-Wreorder]
- 5236 |     semaphore _io_context_available;
+include/../include/app/../future/future_all9.hh:6304:15: warning:   ‘semaphore reactor::_io_context_available’ [-Wreorder]
+ 6304 |     semaphore _io_context_available;
       |               ^~~~~~~~~~~~~~~~~~~~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:8749:1: warning:   when initialized here [-Wreorder]
- 8749 | reactor::reactor(unsigned id)
+include/../include/app/../future/future_all9.hh:9926:1: warning:   when initialized here [-Wreorder]
+ 9926 | reactor::reactor(unsigned id)
       | ^~~~~~~
-include/../include/app/../future/future_all9.hh:8753:36: error: use of deleted function ‘file_desc::file_desc()’
- 8753 |     , _io_context_available(max_aio){
+include/../include/app/../future/future_all9.hh:9930:36: error: use of deleted function ‘file_desc::file_desc()’
+ 9930 |     , _io_context_available(max_aio){
       |                                    ^
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:3472:5: note: declared here
- 3472 |     file_desc() = delete;
+include/../include/app/../future/future_all9.hh:4028:5: note: declared here
+ 4028 |     file_desc() = delete;
       |     ^~~~~~~~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:8753:36: error: no matching function for call to ‘thread_pool::thread_pool()’
- 8753 |     , _io_context_available(max_aio){
+include/../include/app/../future/future_all9.hh:9930:36: error: no matching function for call to ‘thread_pool::thread_pool()’
+ 9930 |     , _io_context_available(max_aio){
       |                                    ^
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:5073:14: note: candidate: ‘thread_pool::thread_pool(std::string)’
- 5073 |     explicit thread_pool(std::string thread_name);
+include/../include/app/../future/future_all9.hh:6106:14: note: candidate: ‘thread_pool::thread_pool(std::string)’
+ 6106 |     explicit thread_pool(std::string thread_name);
       |              ^~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:5073:14: note:   candidate expects 1 argument, 0 provided
+include/../include/app/../future/future_all9.hh:6106:14: note:   candidate expects 1 argument, 0 provided
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:8749:1: error: uninitialized const member in ‘const bool’ [-fpermissive]
- 8749 | reactor::reactor(unsigned id)
+include/../include/app/../future/future_all9.hh:9926:1: error: uninitialized const member in ‘const bool’ [-fpermissive]
+ 9926 | reactor::reactor(unsigned id)
       | ^~~~~~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:5342:16: note: ‘const bool reactor::_reuseport’ should be initialized
- 5342 |     const bool _reuseport;
+include/../include/app/../future/future_all9.hh:6431:16: note: ‘const bool reactor::_reuseport’ should be initialized
+ 6431 |     const bool _reuseport;
       |                ^~~~~~~~~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
 include/../include/app/../future/future_all9.hh: In member function ‘future<io_event> reactor::submit_io(Func)’:
-include/../include/app/../future/future_all9.hh:10683:1: warning: no return statement in function returning non-void [-Wreturn-type]
-10683 | }
+include/../include/app/../future/future_all9.hh:11860:1: warning: no return statement in function returning non-void [-Wreturn-type]
+11860 | }
       | ^
 include/../include/app/../future/future_all9.hh: In lambda function:
-include/../include/app/../future/future_all9.hh:10772:10: error: no matching function for call to ‘repeat_until_value(data_source_impl::skip(uint64_t)::<lambda(uint64_t&)>::<lambda()>)’
-10772 |         });
+include/../include/app/../future/future_all9.hh:11949:10: error: no matching function for call to ‘repeat_until_value(data_source_impl::skip(uint64_t)::<lambda(uint64_t&)>::<lambda()>)’
+11949 |         });
       |          ^
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:7136:1: note: candidate: ‘template<class AsyncAction>  requires requires(AsyncAction aa) {requires is_future<decltype(aa())>::value;bool(aa().get0());aa().get0().value();} repeat_until_value_return_type<AsyncAction> repeat_until_value(AsyncAction&&)’
- 7136 | repeat_until_value(AsyncAction&& action) {
+include/../include/app/../future/future_all9.hh:8313:1: note: candidate: ‘template<class AsyncAction>  requires requires(AsyncAction aa) {requires is_future<decltype(aa())>::value;bool(aa().get0());aa().get0().value();} repeat_until_value_return_type<AsyncAction> repeat_until_value(AsyncAction&&)’
+ 8313 | repeat_until_value(AsyncAction&& action) {
       | ^~~~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:7136:1: note:   template argument deduction/substitution failed:
+include/../include/app/../future/future_all9.hh:8313:1: note:   template argument deduction/substitution failed:
 include/../include/app/../future/future_all9.hh: In substitution of ‘template<class AsyncAction> using repeat_until_value_return_type = typename repeat_until_value_type_helper<typename std::result_of<Func()>::type>::future_type [with AsyncAction = data_source_impl::skip(uint64_t)::<lambda(uint64_t&)>::<lambda()>]’:
-include/../include/app/../future/future_all9.hh:7136:1:   required by substitution of ‘template<class AsyncAction>  requires requires(AsyncAction aa) {requires is_future<decltype(aa())>::value;bool(aa().get0());aa().get0().value();} repeat_until_value_return_type<AsyncAction> repeat_until_value(AsyncAction&&) [with AsyncAction = data_source_impl::skip(uint64_t)::<lambda(uint64_t&)>::<lambda()>]’
-include/../include/app/../future/future_all9.hh:10772:10:   required from here
-include/../include/app/../future/future_all9.hh:7126:7: error: invalid use of incomplete type ‘struct repeat_until_value_type_helper<future<std::experimental::fundamentals_v1::optional<temporary_buffer<char> > > >’
- 7126 | using repeat_until_value_return_type
+include/../include/app/../future/future_all9.hh:8313:1:   required by substitution of ‘template<class AsyncAction>  requires requires(AsyncAction aa) {requires is_future<decltype(aa())>::value;bool(aa().get0());aa().get0().value();} repeat_until_value_return_type<AsyncAction> repeat_until_value(AsyncAction&&) [with AsyncAction = data_source_impl::skip(uint64_t)::<lambda(uint64_t&)>::<lambda()>]’
+include/../include/app/../future/future_all9.hh:11949:10:   required from here
+include/../include/app/../future/future_all9.hh:8303:7: error: invalid use of incomplete type ‘struct repeat_until_value_type_helper<future<std::experimental::fundamentals_v1::optional<temporary_buffer<char> > > >’
+ 8303 | using repeat_until_value_return_type
       |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:7113:8: note: declaration of ‘struct repeat_until_value_type_helper<future<std::experimental::fundamentals_v1::optional<temporary_buffer<char> > > >’
- 7113 | struct repeat_until_value_type_helper;
+include/../include/app/../future/future_all9.hh:8290:8: note: declaration of ‘struct repeat_until_value_type_helper<future<std::experimental::fundamentals_v1::optional<temporary_buffer<char> > > >’
+ 8290 | struct repeat_until_value_type_helper;
       |        ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
 include/../include/app/../future/future_all9.hh: At global scope:
-include/../include/app/../future/future_all9.hh:10796:10: error: no declaration matches ‘future<> output_stream<CharType>::write(scattered_message<CharType>)’
-10796 | future<> output_stream<CharType>::write(scattered_message<CharType> msg) {
-      |          ^~~~~~~~~~~~~~~~~~~~~~~
+include/../include/app/../future/future_all9.hh:12376:1: error: no declaration matches ‘thread_pool::thread_pool(sstring)’
+12376 | thread_pool::thread_pool(sstring name) : _worker_thread([this, name] { work(name); }), _notify(pthread_self()) {
+      | ^~~~~~~~~~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:4641:14: note: candidates are: ‘future<> output_stream<CharType>::write(temporary_buffer<char_type>)’
- 4641 |     future<> write(temporary_buffer<char_type>);
-      |              ^~~~~
-include/../include/app/../future/future_all9.hh:4640:14: note:                 ‘future<> output_stream<CharType>::write(int)’
- 4640 |     future<> write(scattered_message<char_type> msg);
-      |              ^~~~~
-include/../include/app/../future/future_all9.hh:4639:14: note:                 ‘future<> output_stream<CharType>::write(net::packet)’
- 4639 |     future<> write(net::packet p);
-      |              ^~~~~
+include/../include/app/../future/future_all9.hh:6097:7: note: candidates are: ‘thread_pool::thread_pool(const thread_pool&)’
+ 6097 | class thread_pool {
+      |       ^~~~~~~~~~~
+include/../include/app/../future/future_all9.hh:6106:14: note:                 ‘thread_pool::thread_pool(std::string)’
+ 6106 |     explicit thread_pool(std::string thread_name);
+      |              ^~~~~~~~~~~
+include/../include/app/../future/future_all9.hh:6097:7: note: ‘class thread_pool’ defined here
+ 6097 | class thread_pool {
+      |       ^~~~~~~~~~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:10791:10: note:                 ‘future<> output_stream<CharType>::write(const std::__cxx11::basic_string<_CharT>&)’
-10791 | future<> output_stream<CharType>::write(const std::basic_string<CharType>& s) {
-      |          ^~~~~~~~~~~~~~~~~~~~~~~
+include/../include/app/../future/future_all9.hh:12376:85: error: expected unqualified-id before ‘)’ token
+12376 | thread_pool::thread_pool(sstring name) : _worker_thread([this, name] { work(name); }), _notify(pthread_self()) {
+      |                                                                                     ^
+include/../include/app/../future/future_all9.hh:12380:6: error: no declaration matches ‘void thread_pool::work(sstring)’
+12380 | void thread_pool::work(sstring name) {
+      |      ^~~~~~~~~~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:4636:14: note:                 ‘template<class CharType> template<class StringChar, class SizeType, SizeType MaxSize> future<> output_stream<CharType>::write(const basic_sstring<StringChar, SizeType, MaxSize>&)’
- 4636 |     future<> write(const basic_sstring<StringChar, SizeType, MaxSize>& s);
-      |              ^~~~~
-In file included from include/../include/app/app-template.hh:27,
-                 from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:10778:10: note:                 ‘future<> output_stream<CharType>::write(const char_type*)’
-10778 | future<> output_stream<CharType>::write(const char_type* buf) {
-      |          ^~~~~~~~~~~~~~~~~~~~~~~
-In file included from include/../include/app/app-template.hh:27,
-                 from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:4632:14: note:                 ‘future<> output_stream<CharType>::write(const char_type*, size_t)’
- 4632 |     future<> write(const char_type* buf, size_t n);
-      |              ^~~~~
-include/../include/app/../future/future_all9.hh:4602:7: note: ‘class output_stream<CharType>’ defined here
- 4602 | class output_stream final {
-      |       ^~~~~~~~~~~~~
+include/../include/app/../future/future_all9.hh:6126:10: note: candidate is: ‘void thread_pool::work(std::string)’
+ 6126 |     void work(std::string thread_name);
+      |          ^~~~
+include/../include/app/../future/future_all9.hh:6097:7: note: ‘class thread_pool’ defined here
+ 6097 | class thread_pool {
+      |       ^~~~~~~~~~~
 test/new_tests/smp_test.cc: In lambda function:
 test/new_tests/smp_test.cc:41:22: warning: format ‘%s’ expects argument of type ‘char*’, but argument 3 has type ‘const string’ {aka ‘const std::__cxx11::basic_string<char>’} [-Wformat=]
    41 |         printf("%s: %s\n", (result ? "PASS" : "FAIL"), msg);
@@ -381,19 +283,109 @@ test/new_tests/smp_test.cc:41:22: warning: format ‘%s’ expects argument of t
       |                      char*
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all9.hh: In instantiation of ‘void output_stream<CharType>::poll_flush() [with CharType = char]’:
+include/../include/app/../future/future_all9.hh:6534:24:   required from here
+include/../include/app/../future/future_all9.hh:12327:19: error: no match for ‘operator=’ (operand types are ‘std::optional<promise<> >’ and ‘const std::experimental::fundamentals_v1::nullopt_t’)
+12327 |         _in_batch = std::experimental::nullopt;
+      |         ~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /usr/include/c++/10/bits/node_handle.h:39,
+                 from /usr/include/c++/10/bits/stl_tree.h:72,
+                 from /usr/include/c++/10/map:60,
+                 from /usr/local/include/boost/program_options/errors.hpp:15,
+                 from /usr/local/include/boost/program_options/options_description.hpp:12,
+                 from /usr/local/include/boost/program_options.hpp:15,
+                 from include/../include/app/app-template.hh:24,
+                 from test/new_tests/smp_test.cc:2:
+/usr/include/c++/10/optional:775:7: note: candidate: ‘std::optional<_Tp>& std::optional<_Tp>::operator=(std::nullopt_t) [with _Tp = promise<>]’
+  775 |       operator=(nullopt_t) noexcept
+      |       ^~~~~~~~
+/usr/include/c++/10/optional:775:17: note:   no known conversion for argument 1 from ‘const std::experimental::fundamentals_v1::nullopt_t’ to ‘std::nullopt_t’
+  775 |       operator=(nullopt_t) noexcept
+      |                 ^~~~~~~~~
+/usr/include/c++/10/optional:788:2: note: candidate: ‘template<class _Up> std::enable_if_t<__and_v<std::__not_<std::is_same<std::optional<_Tp>, typename std::remove_cv<typename std::remove_reference<_Iter>::type>::type> >, std::__not_<std::__and_<std::is_scalar<_Tp>, std::is_same<_Tp, typename std::decay<_Up>::type> > >, std::is_constructible<_Tp, _Up>, std::is_assignable<_Tp&, _Up> >, std::optional<_Tp>&> std::optional<_Tp>::operator=(_Up&&) [with _Up = _Up; _Tp = promise<>]’
+  788 |  operator=(_Up&& __u)
+      |  ^~~~~~~~
+/usr/include/c++/10/optional:788:2: note:   template argument deduction/substitution failed:
+In file included from /usr/include/c++/10/bits/move.h:57,
+                 from /usr/include/c++/10/bits/stl_pair.h:59,
+                 from /usr/include/c++/10/bits/stl_algobase.h:64,
+                 from /usr/include/c++/10/bits/char_traits.h:39,
+                 from /usr/include/c++/10/string:40,
+                 from /usr/local/include/boost/program_options/errors.hpp:12,
+                 from /usr/local/include/boost/program_options/options_description.hpp:12,
+                 from /usr/local/include/boost/program_options.hpp:15,
+                 from include/../include/app/app-template.hh:24,
+                 from test/new_tests/smp_test.cc:2:
+/usr/include/c++/10/type_traits: In substitution of ‘template<bool _Cond, class _Tp> using enable_if_t = typename std::enable_if::type [with bool _Cond = false; _Tp = std::optional<promise<> >&]’:
+/usr/include/c++/10/optional:788:2:   required by substitution of ‘template<class _Up> std::enable_if_t<__and_v<std::__not_<std::is_same<std::optional<promise<> >, typename std::remove_cv<typename std::remove_reference<_Tp>::type>::type> >, std::__not_<std::__and_<std::is_scalar<promise<> >, std::is_same<promise<>, typename std::decay<_Tp>::type> > >, std::is_constructible<promise<>, _Up>, std::is_assignable<promise<>&, _Up> >, std::optional<promise<> >&> std::optional<promise<> >::operator=<_Up>(_Up&&) [with _Up = const std::experimental::fundamentals_v1::nullopt_t&]’
+include/../include/app/../future/future_all9.hh:12327:19:   required from ‘void output_stream<CharType>::poll_flush() [with CharType = char]’
+include/../include/app/../future/future_all9.hh:6534:24:   required from here
+/usr/include/c++/10/type_traits:2554:11: error: no type named ‘type’ in ‘struct std::enable_if<false, std::optional<promise<> >&>’
+ 2554 |     using enable_if_t = typename enable_if<_Cond, _Tp>::type;
+      |           ^~~~~~~~~~~
+In file included from /usr/include/c++/10/bits/node_handle.h:39,
+                 from /usr/include/c++/10/bits/stl_tree.h:72,
+                 from /usr/include/c++/10/map:60,
+                 from /usr/local/include/boost/program_options/errors.hpp:15,
+                 from /usr/local/include/boost/program_options/options_description.hpp:12,
+                 from /usr/local/include/boost/program_options.hpp:15,
+                 from include/../include/app/app-template.hh:24,
+                 from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all9.hh: In instantiation of ‘void output_stream<CharType>::poll_flush() [with CharType = char]’:
+include/../include/app/../future/future_all9.hh:6534:24:   required from here
+/usr/include/c++/10/optional:805:2: note: candidate: ‘template<class _Up> std::enable_if_t<__and_v<std::__not_<std::is_same<_T1, _U1> >, std::is_constructible<_Tp, const _Up&>, std::is_assignable<_Tp&, _Up>, std::__not_<std::__or_<std::is_constructible<_Tp, const std::optional<_Up>&>, std::is_constructible<_Tp, std::optional<_Up>&>, std::is_constructible<_Tp, const std::optional<_Up>&&>, std::is_constructible<_Tp, std::optional<_Up>&&>, std::is_convertible<const std::optional<_Up>&, _Tp>, std::is_convertible<std::optional<_Up>&, _Tp>, std::is_convertible<const std::optional<_Up>&&, _Tp>, std::is_convertible<std::optional<_Up>&&, _Tp> > >, std::__not_<std::__or_<std::is_assignable<_Tp&, const std::optional<_Up>&>, std::is_assignable<_Tp&, std::optional<_Up>&>, std::is_assignable<_Tp&, const std::optional<_Up>&&>, std::is_assignable<_Tp&, std::optional<_Up>&&> > > >, std::optional<_Tp>&> std::optional<_Tp>::operator=(const std::optional<_Up>&) [with _Up = _Up; _Tp = promise<>]’
+  805 |  operator=(const optional<_Up>& __u)
+      |  ^~~~~~~~
+/usr/include/c++/10/optional:805:2: note:   template argument deduction/substitution failed:
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all9.hh:12327:19: note:   ‘const std::experimental::fundamentals_v1::nullopt_t’ is not derived from ‘const std::optional<_Tp>’
+12327 |         _in_batch = std::experimental::nullopt;
+      |         ~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /usr/include/c++/10/bits/node_handle.h:39,
+                 from /usr/include/c++/10/bits/stl_tree.h:72,
+                 from /usr/include/c++/10/map:60,
+                 from /usr/local/include/boost/program_options/errors.hpp:15,
+                 from /usr/local/include/boost/program_options/options_description.hpp:12,
+                 from /usr/local/include/boost/program_options.hpp:15,
+                 from include/../include/app/app-template.hh:24,
+                 from test/new_tests/smp_test.cc:2:
+/usr/include/c++/10/optional:828:2: note: candidate: ‘template<class _Up> std::enable_if_t<__and_v<std::__not_<std::is_same<_T1, _U1> >, std::is_constructible<_Tp, _Up>, std::is_assignable<_Tp&, _Up>, std::__not_<std::__or_<std::is_constructible<_Tp, const std::optional<_Up>&>, std::is_constructible<_Tp, std::optional<_Up>&>, std::is_constructible<_Tp, const std::optional<_Up>&&>, std::is_constructible<_Tp, std::optional<_Up>&&>, std::is_convertible<const std::optional<_Up>&, _Tp>, std::is_convertible<std::optional<_Up>&, _Tp>, std::is_convertible<const std::optional<_Up>&&, _Tp>, std::is_convertible<std::optional<_Up>&&, _Tp> > >, std::__not_<std::__or_<std::is_assignable<_Tp&, const std::optional<_Up>&>, std::is_assignable<_Tp&, std::optional<_Up>&>, std::is_assignable<_Tp&, const std::optional<_Up>&&>, std::is_assignable<_Tp&, std::optional<_Up>&&> > > >, std::optional<_Tp>&> std::optional<_Tp>::operator=(std::optional<_Up>&&) [with _Up = _Up; _Tp = promise<>]’
+  828 |  operator=(optional<_Up>&& __u)
+      |  ^~~~~~~~
+/usr/include/c++/10/optional:828:2: note:   template argument deduction/substitution failed:
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
+include/../include/app/../future/future_all9.hh:12327:19: note:   types ‘std::optional<_Tp>’ and ‘const std::experimental::fundamentals_v1::nullopt_t’ have incompatible cv-qualifiers
+12327 |         _in_batch = std::experimental::nullopt;
+      |         ~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /usr/include/c++/10/bits/node_handle.h:39,
+                 from /usr/include/c++/10/bits/stl_tree.h:72,
+                 from /usr/include/c++/10/map:60,
+                 from /usr/local/include/boost/program_options/errors.hpp:15,
+                 from /usr/local/include/boost/program_options/options_description.hpp:12,
+                 from /usr/local/include/boost/program_options.hpp:15,
+                 from include/../include/app/app-template.hh:24,
+                 from test/new_tests/smp_test.cc:2:
+/usr/include/c++/10/optional:658:11: note: candidate: ‘constexpr std::optional<promise<> >& std::optional<promise<> >::operator=(std::optional<promise<> >&&)’
+  658 |     class optional
+      |           ^~~~~~~~
+/usr/include/c++/10/optional:658:11: note:   no known conversion for argument 1 from ‘const std::experimental::fundamentals_v1::nullopt_t’ to ‘std::optional<promise<> >&&’
+In file included from include/../include/app/app-template.hh:27,
+                 from test/new_tests/smp_test.cc:2:
 include/../include/app/../future/future_all9.hh: In instantiation of ‘void install_oneshot_signal_handler() [with int Signal = 11; void (* Func)() = sigsegv_action]’:
-include/../include/app/../future/future_all9.hh:8903:61:   required from here
-include/../include/app/../future/future_all9.hh:6270:10: warning: unused variable ‘r’ [-Wunused-variable]
- 6270 |     auto r = ::sigaction(Signal, &sa, nullptr);
+include/../include/app/../future/future_all9.hh:10080:61:   required from here
+include/../include/app/../future/future_all9.hh:7141:10: warning: unused variable ‘r’ [-Wunused-variable]
+ 7141 |     auto r = ::sigaction(Signal, &sa, nullptr);
       |          ^
 include/../include/app/../future/future_all9.hh: In instantiation of ‘void install_oneshot_signal_handler() [with int Signal = 6; void (* Func)() = sigabrt_action]’:
-include/../include/app/../future/future_all9.hh:8904:61:   required from here
-include/../include/app/../future/future_all9.hh:6270:10: warning: unused variable ‘r’ [-Wunused-variable]
+include/../include/app/../future/future_all9.hh:10081:61:   required from here
+include/../include/app/../future/future_all9.hh:7141:10: warning: unused variable ‘r’ [-Wunused-variable]
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
 include/../include/app/../future/future_all9.hh: At global scope:
-include/../include/app/../future/future_all9.hh:8482:18: warning: ‘always_inline’ function might not be inlinable [-Wattributes]
- 8482 | std::tuple<T...> future<T...>::get() {
+include/../include/app/../future/future_all9.hh:9659:18: warning: ‘always_inline’ function might not be inlinable [-Wattributes]
+ 9659 | std::tuple<T...> future<T...>::get() {
       |                  ^~~~~~~~~~~~
 makefile:178: recipe for target 'build/test/new_tests/smp_test.o' failed
 make: *** [build/test/new_tests/smp_test.o] Error 1
