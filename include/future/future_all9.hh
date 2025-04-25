@@ -50,6 +50,7 @@
 #include "../util/align.hh"
 #include "../util/backtrace.hh"
 #include "../util/tuple_utils.hh"
+#include "../util/bool_class.hh"
 
 
 template<typename T>
@@ -7643,7 +7644,8 @@ future<size_t> pollable_fd::sendto(socket_address addr, const void* buf, size_t 
         return make_ready_future<size_t>(*r);
     });
 }
-
+struct stop_iteration_tag { };
+using stop_iteration = bool_class<stop_iteration_tag>;
 
 void reactor::start_aio_eventfd_loop() {
     if (!_aio_eventfd) {
@@ -8244,8 +8246,7 @@ void do_until_continued(StopCondition&& stop_cond, AsyncAction&& action, promise
 }
 
 
-struct stop_iteration_tag { };
-using stop_iteration = bool_class<stop_iteration_tag>;
+
 
 
 template<typename AsyncAction>
@@ -12324,7 +12325,7 @@ void output_stream<CharType>::poll_flush() {
         // flush was canceled, do nothing
         _flushing = false;
         _in_batch.value().set_value();
-        _in_batch = std::experimental::nullopt;
+        _in_batch = std::nullopt;
         return;
     }
     auto f = make_ready_future();
