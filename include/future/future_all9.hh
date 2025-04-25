@@ -5822,7 +5822,7 @@ struct directory_entry {
     /// Name of the file in a directory entry.  Will never be "." or "..".  Only the last component is included.
     sstring name;
     /// Type of the directory entry, if known.
-    std::optional<directory_entry_type> type;
+    std::optional<::directory_entry_type> type;
 };
 
 /// File open options
@@ -6425,8 +6425,8 @@ struct reactor {
     using lowres_timer = timer<lowres_clock>;
     using manual_timer = timer<manual_clock>;
     file_desc _task_quota_timer;
-    std::optional<pollable_fd> _aio_eventfd;
-    std::optional<poller> _epoll_poller;
+    std::optional<::pollable_fd> _aio_eventfd;
+    std::optional<reactor::poller> _epoll_poller;
 /*---------------------------------------------*/
     void add_timer(steady_timer* tmr);
     bool queue_timer(steady_timer* tmr);
@@ -6446,7 +6446,7 @@ struct reactor {
 /*---------------信号处理相关------------------------*/
     signals _signals;
     bool _handle_sigint = true;
-    void block_notifier(int); 
+    static void block_notifier(int); 
 /*----------任务相关-------------------*/
     bool _stopping = false;
     bool _stopped = false;
@@ -6486,7 +6486,6 @@ struct reactor {
     static boost::program_options::options_description get_options_description();
     void configure(boost::program_options::variables_map config);
    /*----------------------资源分配相关-----------------------*/
-
     shard_id _io_coordinator;
     io_queue* _io_queue;
     std::unique_ptr<io_queue> my_io_queue = {};
@@ -6502,11 +6501,12 @@ struct reactor {
     /*----------------------poller相关----------------------------------------------------*/
     std::vector<pollfn*> _pollers;
     thread_pool _thread_pool;
-        reactor_backend_epoll _backend;
-    
+    reactor_backend_epoll _backend;
+    template <typename Func> // signature: bool ()
+    static std::unique_ptr<pollfn> make_pollfn(Func&& func);
     void unregister_poller(pollfn* p);
     void register_poller(pollfn* p);
-
+    void replace_poller(pollfn* old, pollfn* neww);
     class io_pollfn;
     class signal_pollfn;
     class aio_batch_submit_pollfn;
@@ -6552,9 +6552,6 @@ struct reactor {
     future<> remove_file(std::string pathname);
     future<> rename_file(std::string old_pathname, std::string new_pathname);
     future<> link_file(std::string oldpath, std::string newpath);
-    future<> writeable(pollable_fd_state& fd) {
-        return _backend.writeable(fd);
-    }
     // In the following three methods, prepare_io is not guaranteed to execute in the same processor
     // in which it was generated. Therefore, care must be taken to avoid the use of objects that could
     // be destroyed within or at exit of prepare_io.
@@ -6585,7 +6582,6 @@ struct reactor {
     void abort_writer(pollable_fd_state& fd, std::exception_ptr ex) {
         return _backend.abort_writer(fd, std::move(ex));
     }
-    void enable_timer(steady_clock_type::time_point when);
     std::unique_ptr<reactor_notifier> make_reactor_notifier() {
         return _backend.make_reactor_notifier();
     }
@@ -6616,6 +6612,23 @@ reactor::pure_poll_once() {
         }
     }
     return false;
+}
+
+template <typename Func>
+inline
+std::unique_ptr<pollfn>
+reactor::make_pollfn(Func&& func) {
+    struct the_pollfn : pollfn {
+        the_pollfn(Func&& func) : func(std::forward<Func>(func)) {}
+        Func func;
+        virtual bool poll() override final {
+            return func();
+        }
+        virtual bool pure_poll() override final {
+            return poll(); // dubious, but compatible
+        }
+    };
+    return std::make_unique<the_pollfn>(std::forward<Func>(func));
 }
 
 bool reactor::flush_pending_aio() {
@@ -6693,12 +6706,6 @@ void reactor::unregister_poller(pollfn* p) {
 }
 
 
-void
-reactor::start_epoll() {
-    if (!_epoll_poller) {
-        _epoll_poller = poller(std::make_unique<epoll_pollfn>(*this));
-    }
-}
 
 bool
 reactor::flush_tcp_batches() {
@@ -6710,7 +6717,6 @@ reactor::flush_tcp_batches() {
     }
     return work;
 }
-
 
 
 class reactor::poller::registration_task : public task {
@@ -6734,7 +6740,21 @@ public:
 
 
 
+reactor::poller::poller(poller&& x)
+        : _pollfn(std::move(x._pollfn)), _registration_task(x._registration_task) {
+    if (_pollfn && _registration_task) {
+        _registration_task->moved(this);
+    }
+}
 
+reactor::poller&
+reactor::poller::operator=(poller&& x) {
+    if (this != &x) {
+        this->~poller();
+        new (this) poller(std::move(x));
+    }
+    return *this;
+}
 reactor_backend_epoll::reactor_backend_epoll()
     : _epollfd(file_desc::epoll_create(EPOLL_CLOEXEC)) {
 }
@@ -7821,22 +7841,6 @@ future<size_t> pollable_fd::sendto(socket_address addr, const void* buf, size_t 
 struct stop_iteration_tag { };
 using stop_iteration = bool_class<stop_iteration_tag>;
 
-void reactor::start_aio_eventfd_loop() {
-    if (!_aio_eventfd) {
-        return;
-    }
-    future<> loop_done = repeat([this] {
-        return _aio_eventfd->readable().then([this] {
-            char garbage[8];
-            ::read(_aio_eventfd->get_fd(), garbage, 8); // totally uninteresting
-            return _stopping ? stop_iteration::yes : stop_iteration::no;
-        });
-    });
-    // must use make_lw_shared, because at_exit expects a copyable function
-    at_exit([loop_done = make_lw_shared(std::move(loop_done))] {
-        return std::move(*loop_done);
-    });
-}
 
 /* not yet implemented for OSv. TODO: do the notification like we do class smp. */
 
@@ -8517,7 +8521,7 @@ repeat_until_value(AsyncAction&& action) {
     try {
         promise<value_type> p;
         auto f = p.get_future();
-        schedule(make_task([action = std::forward<AsyncAction>(action), p = std::move(p)] () mutable {
+        schedule_normal(make_task([action = std::forward<AsyncAction>(action), p = std::move(p)] () mutable {
             repeat_until_value(std::forward<AsyncAction>(action)).forward_to(std::move(p));
         }));
         return f;
@@ -9563,58 +9567,6 @@ void smp_message_queue::start(unsigned cpuid) {
     std::snprintf(instance, sizeof(instance), "%u-%u", engine().cpu_id(), cpuid);
 }
 
-
-
-
-// // 实现maybe_wakeup方法
-// void smp_message_queue::lf_queue::maybe_wakeup() {
-//     // 在调用lf_queue_base::push()之后调用
-    
-//     // 这是读后写操作，通常需要memory_order_seq_cst，
-//     // 但我们使用systemwide_memory_barrier()插入该屏障，
-//     // 因为seq_cst成本很高。
-    
-//     // 然而，我们确实需要一个编译器屏障：
-//     std::atomic_signal_fence(std::memory_order_seq_cst);
-//     if (remote->_sleeping.load(std::memory_order_relaxed)) {
-//         // 我们可以自由地清除它，因为我们现在正在发送信号
-//         remote->_sleeping.store(false, std::memory_order_relaxed);
-//         remote->wakeup();
-//     }
-// }
-
-// // 实现pure_poll_tx方法
-// bool smp_message_queue::pure_poll_tx() const {
-//     // 检查完成队列是否为空
-//     return !_completed.empty();
-// }
-
-// // 实现pure_poll_rx方法 
-// bool smp_message_queue::pure_poll_rx() const {
-//     // 检查挂起队列是否为空
-//     return !_pending.empty();
-// }
-
-
-
-// bool reactor::do_expire_lowres_timers() {
-//     if (engine()._lowres_next_timeout == lowres_clock::time_point()) {
-//         return false;
-//     }
-//     auto now = lowres_clock::now();
-//     if (now > engine()._lowres_next_timeout) {
-//         complete_timers(engine()._lowres_timers, engine()._expired_lowres_timers, [] {
-//             if (!engine()._lowres_timers.empty()) {
-//                 engine()._lowres_next_timeout = engine()._lowres_timers.get_next_timeout();
-//             } else {
-//                 engine()._lowres_next_timeout = lowres_clock::time_point();
-//             }
-//         });
-//         return true;
-//     }
-//     return false;
-// }
-
 bool reactor::do_check_lowres_timers() const{
     if (engine()._lowres_next_timeout == lowres_clock::time_point()) {
         return false;
@@ -10092,17 +10044,17 @@ future<> reactor::run_exit_tasks() {
     _stopping = true;
     // // stop_aio_eventfd_loop();
     // return do_for_each(_exit_funcs.rbegin(), _exit_funcs.rend(), [] (auto& func) {
-    //     return func();
+    //    return func();
     // });
 }
-
-
 
 reactor::reactor(unsigned id)
     : _id(id)
     , _cpu_started(0)
     , _io_context(0)
-    , _io_context_available(max_aio),_reuseport(posix_reuseport_detect()){
+    , _io_context_available(max_aio),_reuseport(posix_reuseport_detect()),_task_quota_timer(file_desc::timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC))
+    , _thread_pool("sys"+id)
+    {
     thread_impl::init();
     auto r = ::io_setup(max_aio, &_io_context);
     assert(r >= 0);
@@ -12606,3 +12558,119 @@ thread_pool::~thread_pool() {
 
 
 
+void
+reactor::start_epoll() {
+    if (!_epoll_poller) {
+        _epoll_poller = poller(std::make_unique<epoll_pollfn>(*this));
+    }
+}
+
+void reactor::start_aio_eventfd_loop() {
+    if (!_aio_eventfd) {
+        return;
+    }
+    future<> loop_done = repeat([this] {
+        return _aio_eventfd->readable().then([this] {
+            char garbage[8];
+            ::read(_aio_eventfd->get_fd(), garbage, 8); // totally uninteresting
+            return _stopping ? stop_iteration::yes : stop_iteration::no;
+        });
+    });
+    // must use make_lw_shared, because at_exit expects a copyable function
+    at_exit([loop_done = make_lw_shared(std::move(loop_done))] {
+        return std::move(*loop_done);
+    });
+}
+
+
+
+reactor::poller::~poller() {
+    // We can't just remove the poller from reactor::_pollers, because we
+    // may be running inside a poller ourselves, and so in the middle of
+    // iterating reactor::_pollers itself.  So we schedule a task to remove
+    // the poller instead.
+    //
+    // Since we don't want to call the poller after we exit the destructor,
+    // we replace it atomically with another one, and schedule a task to
+    // delete the replacement.
+    if (_pollfn) {
+        if (_registration_task) {
+            // not added yet, so don't do it at all.
+            _registration_task->cancel();
+        }
+        else
+        {
+            auto dummy = make_pollfn([] { return false; });
+            auto dummy_p = dummy.get();
+            auto task = std::make_unique<deregistration_task>(std::move(dummy));
+            engine().add_task(std::move(task));
+            engine().replace_poller(_pollfn.get(), dummy_p);
+        }
+    }
+}
+
+syscall_work_queue::syscall_work_queue()
+    : _pending()
+    , _completed()
+    , _start_eventfd(0) {
+}
+
+void reactor::replace_poller(pollfn* old, pollfn* neww) {
+    std::replace(_pollers.begin(), _pollers.end(), old, neww);
+}
+
+
+
+unsigned syscall_work_queue::complete() {
+    std::array<work_item*, queue_length> tmp_buf;
+    auto end = tmp_buf.data();
+    auto nr = _completed.consume_all([&] (work_item* wi) {
+        *end++ = wi;
+    });
+    for (auto p = tmp_buf.data(); p != end; ++p) {
+        auto wi = *p;
+        wi->complete();
+        delete wi;
+    }
+    _queue_has_room.signal(nr);
+    return nr;
+}
+
+
+void
+reactor::poller::do_register() {
+    // We can't just insert a poller into reactor::_pollers, because we
+    // may be running inside a poller ourselves, and so in the middle of
+    // iterating reactor::_pollers itself.  So we schedule a task to add
+    // the poller instead.
+    auto task = std::make_unique<registration_task>(this);
+    auto tmp = task.get();
+    engine().add_task(std::move(task));
+    _registration_task = tmp;
+}
+
+
+bool
+reactor::do_expire_lowres_timers() {
+    if (_lowres_next_timeout == lowres_clock::time_point()) {
+        return false;
+    }
+    auto now = lowres_clock::now();
+    if (now > _lowres_next_timeout) {
+        complete_timers(_lowres_timers, _expired_lowres_timers, [this] {
+            if (!_lowres_timers.empty()) {
+                _lowres_next_timeout = _lowres_timers.get_next_timeout();
+            } else {
+                _lowres_next_timeout = lowres_clock::time_point();
+            }
+        });
+        return true;
+    }
+    return false;
+}
+
+alignas(64) reactor::smp_pollfn::aligned_flag reactor::smp_pollfn::_membarrier_lock;
+inline
+pollable_fd_state::~pollable_fd_state() {
+    engine().forget(*this);
+}
