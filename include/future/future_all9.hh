@@ -15,6 +15,7 @@
 #include <type_traits>
 #include <setjmp.h>
 #include <optional>
+#include <sys/uio.h>
 #include "do_with.hh"
 #include <chrono>
 #include <boost/intrusive/list.hpp>
@@ -6123,7 +6124,6 @@ public:
     // takes place, we'll get an extra signal and complete will be called one extra time, which is
     // harmless.
     void exit_interrupt_mode() { _main_thread_idle.store(false, std::memory_order_relaxed); }
-private:
     void work(std::string thread_name);
 };
 
@@ -6430,6 +6430,7 @@ struct reactor {
 
     /*-------------------------------------网络相关--------------------------------------------------------------------*/
     const bool _reuseport;
+    bool posix_reuseport_detect();
     std::unique_ptr<network_stack> _network_stack;
     promise<std::unique_ptr<network_stack>> _network_stack_ready_promise;
 };
@@ -9928,7 +9929,7 @@ reactor::reactor(unsigned id)
     : _id(id)
     , _cpu_started(0)
     , _io_context(0)
-    , _io_context_available(max_aio){
+    , _io_context_available(max_aio),_reuseport(posix_reuseport_detect()){
     thread_impl::init();
     auto r = ::io_setup(max_aio, &_io_context);
     assert(r >= 0);
@@ -9964,6 +9965,19 @@ void reactor::at_exit(std::function<future<> ()> func) {
     _exit_funcs.push_back(std::move(func));
 }
 
+bool
+reactor::posix_reuseport_detect() {
+    return false; // FIXME: reuseport currently leads to heavy load imbalance. Until we fix that, just
+                  // disable it unconditionally.
+/*思考为什么 reuseport会引入负载不均衡*/
+    try {
+        file_desc fd = file_desc::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        fd.setsockopt(SOL_SOCKET, SO_REUSEPORT, 1);
+        return true;
+    } catch(std::system_error& e) {
+        return false;
+    }
+}
 
 void reactor::run_tasks(std::deque<std::unique_ptr<task>>& tasks) {
     while (!tasks.empty()) {
@@ -12373,12 +12387,11 @@ output_stream<CharType>::close() {
     });
 }
 
-#ifndef HAVE_OSV
-thread_pool::thread_pool(sstring name) : _worker_thread([this, name] { work(name); }), _notify(pthread_self()) {
+thread_pool::thread_pool(std::string name) : _worker_thread([this, name] { work(name); }), _notify(pthread_self()) {
     engine()._signals.handle_signal(SIGUSR1, [this] { inter_thread_wq.complete(); });
 }
 
-void thread_pool::work(sstring name) {
+void thread_pool::work(std::string name) {
     pthread_setname_np(pthread_self(), name.c_str());
     sigset_t mask;
     sigfillset(&mask);
@@ -12412,7 +12425,6 @@ thread_pool::~thread_pool() {
     inter_thread_wq._start_eventfd.signal(1);
     _worker_thread.join();
 }
-#endif
 
 
 
