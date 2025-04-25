@@ -15,6 +15,7 @@
 #include <type_traits>
 #include <setjmp.h>
 #include <optional>
+#include <sys/uio.h>
 #include "do_with.hh"
 #include <chrono>
 #include <boost/intrusive/list.hpp>
@@ -49,6 +50,87 @@
 #include <sys/mman.h>
 #include "../util/align.hh"
 #include "../util/backtrace.hh"
+#include "../util/bool_class.hh"
+
+template <typename Func>
+class deferred_action {
+        Func _func;
+        bool _cancelled = false;
+    public:
+        static_assert(std::is_nothrow_move_constructible<Func>::value, "Func(Func&&) must be noexcept");
+        deferred_action(Func&& func) noexcept : _func(std::move(func)) {}
+        deferred_action(deferred_action&& o) noexcept : _func(std::move(o._func)), _cancelled(o._cancelled) {
+            o._cancelled = true;
+        }
+        deferred_action& operator=(deferred_action&& o) noexcept {
+            if (this != &o) {
+                this->~deferred_action();
+                new (this) deferred_action(std::move(o));
+            }
+            return *this;
+        }
+        deferred_action(const deferred_action&) = delete;
+        ~deferred_action() { if (!_cancelled) { _func(); }; }
+        void cancel() { _cancelled = true; }
+};
+
+template <typename Func> 
+deferred_action<Func>
+defer(Func&& func) {
+    return deferred_action<Func>(std::forward<Func>(func));
+}
+
+template<typename T>
+class reference_wrapper {
+    T* _pointer;
+    explicit reference_wrapper(T& object) noexcept:_pointer(&object){}
+    template<typename U>
+    friend reference_wrapper<U> ref(U&) noexcept;
+    template<typename U>
+    friend reference_wrapper<const U> cref(const U&) noexcept;
+public:
+    using type = T;
+    operator T&() const noexcept { return *_pointer; }
+    T& get() const noexcept { return *_pointer; }
+
+};
+
+
+inline
+size_t iovec_len(const iovec* begin, size_t len)
+{
+    size_t ret = 0;
+    auto end = begin + len;
+    while (begin != end) {
+        ret += begin++->iov_len;
+    }
+    return ret;
+}
+
+
+
+/// Wraps reference in a reference_wrapper
+template<typename T>
+inline reference_wrapper<T> ref(T& object) noexcept {
+    return reference_wrapper<T>(object);
+}
+/// Wraps constant reference in a reference_wrapper
+template<typename T>
+inline reference_wrapper<const T> cref(const T& object) noexcept {
+    return reference_wrapper<const T>(object);
+}
+
+
+
+
+
+
+
+
+
+
+
+
 
 #ifdef __cpp_concepts
 #define GCC6_CONCEPT(x...) x
@@ -65,6 +147,31 @@ inline bool need_preempt() {
     std::atomic_signal_fence(std::memory_order_seq_cst);
     return g_need_preempt;
 }
+
+
+void
+systemwide_memory_barrier() {
+    // FIXME: use sys_membarrier() when available
+    static thread_local char* mem = [] {
+       void* mem = mmap(nullptr, getpagesize(),
+               PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANONYMOUS,
+               -1, 0) ;
+       assert(mem != MAP_FAILED);
+       return reinterpret_cast<char*>(mem);
+    }();
+    int r1 = mprotect(mem, getpagesize(), PROT_READ | PROT_WRITE);
+    assert(r1 == 0);
+    // Force page into memory to avoid next mprotect() attempting to be clever
+    *mem = 3;
+    // Force page into memory
+    // lower permissions to force kernel to send IPI to all threads, with
+    // a side effect of executing a memory barrier on those threads
+    // FIXME: does this work on ARM?
+    int r2 = mprotect(mem, getpagesize(), PROT_READ);
+    assert(r2 == 0);
+}
+
 
 
 
@@ -230,6 +337,7 @@ void prefetchw_n(T** pptr) {
 
 #include <bitset>
 #include <limits>
+#include <variant>
 
 namespace bitsets {
 static constexpr int ulong_bits = std::numeric_limits<unsigned long>::digits;
@@ -410,6 +518,1034 @@ struct signals {
 
 
 
+/*---------------------------basic_string------------------------------------------*/
+
+
+class deleter final {
+public:
+    /// \cond internal
+    struct impl;
+    struct raw_object_tag {};
+    /// \endcond
+private:
+    // if bit 0 set, point to object to be freed directly.
+    impl* _impl = nullptr;
+public:
+    /// Constructs an empty deleter that does nothing in its destructor.
+    deleter() = default;
+    deleter(const deleter&) = delete;
+    /// Moves a deleter.
+    deleter(deleter&& x) noexcept : _impl(x._impl) { x._impl = nullptr; }
+    /// \cond internal
+    explicit deleter(impl* i) : _impl(i) {}
+    deleter(raw_object_tag tag, void* object)
+        : _impl(from_raw_object(object)) {}
+    /// \endcond
+    /// Destroys the deleter and carries out the encapsulated action.
+    ~deleter();
+    deleter& operator=(deleter&& x);
+    deleter& operator=(deleter&) = delete;
+    /// Performs a sharing operation.  The encapsulated action will only
+    /// be carried out after both the original deleter and the returned
+    /// deleter are both destroyed.
+    ///
+    /// \return a deleter with the same encapsulated action as this one.
+    deleter share();
+    /// Checks whether the deleter has an associated action.
+    explicit operator bool() const { return bool(_impl); }
+    /// \cond internal
+    void reset(impl* i) {
+        this->~deleter();
+        new (this) deleter(i);
+    }
+    /// \endcond
+    /// Appends another deleter to this deleter.  When this deleter is
+    /// destroyed, both encapsulated actions will be carried out.
+    void append(deleter d);
+private:
+    static bool is_raw_object(impl* i) {
+        auto x = reinterpret_cast<uintptr_t>(i);
+        return x & 1;
+    }
+    bool is_raw_object() const {
+        return is_raw_object(_impl);
+    }
+    static void* to_raw_object(impl* i) {
+        auto x = reinterpret_cast<uintptr_t>(i);
+        return reinterpret_cast<void*>(x & ~uintptr_t(1));
+    }
+    void* to_raw_object() const {
+        return to_raw_object(_impl);
+    }
+    impl* from_raw_object(void* object) {
+        auto x = reinterpret_cast<uintptr_t>(object);
+        return reinterpret_cast<impl*>(x | 1);
+    }
+};
+
+/// \cond internal
+struct deleter::impl {
+    unsigned refs = 1;
+    deleter next;
+    impl(deleter next) : next(std::move(next)) {}
+    virtual ~impl() {}
+};
+/// \endcond
+
+inline
+deleter::~deleter() {
+    if (is_raw_object()) {
+        std::free(to_raw_object());
+        return;
+    }
+    if (_impl && --_impl->refs == 0) {
+        delete _impl;
+    }
+}
+
+inline
+deleter& deleter::operator=(deleter&& x) {
+    if (this != &x) {
+        this->~deleter();
+        new (this) deleter(std::move(x));
+    }
+    return *this;
+}
+
+/// \cond internal
+template <typename Deleter>
+struct lambda_deleter_impl final : deleter::impl {
+    Deleter del;
+    lambda_deleter_impl(deleter next, Deleter&& del)
+        : impl(std::move(next)), del(std::move(del)) {}
+    virtual ~lambda_deleter_impl() override { del(); }
+};
+
+template <typename Object>
+struct object_deleter_impl final : deleter::impl {
+    Object obj;
+    object_deleter_impl(deleter next, Object&& obj)
+        : impl(std::move(next)), obj(std::move(obj)) {}
+};
+
+template <typename Object>
+inline
+object_deleter_impl<Object>* make_object_deleter_impl(deleter next, Object obj) {
+    return new object_deleter_impl<Object>(std::move(next), std::move(obj));
+}
+/// \endcond
+
+/// Makes a \ref deleter that encapsulates the action of
+/// destroying an object, as well as running another deleter.  The input
+/// object is moved to the deleter, and destroyed when the deleter is destroyed.
+///
+/// \param d deleter that will become part of the new deleter's encapsulated action
+/// \param o object whose destructor becomes part of the new deleter's encapsulated action
+/// \related deleter
+template <typename Object>
+deleter
+make_deleter(deleter next, Object o) {
+    return deleter(new lambda_deleter_impl<Object>(std::move(next), std::move(o)));
+}
+
+/// Makes a \ref deleter that encapsulates the action of destroying an object.  The input
+/// object is moved to the deleter, and destroyed when the deleter is destroyed.
+///
+/// \param o object whose destructor becomes the new deleter's encapsulated action
+/// \related deleter
+template <typename Object>
+deleter
+make_deleter(Object o) {
+    return make_deleter(deleter(), std::move(o));
+}
+
+/// \cond internal
+struct free_deleter_impl final : deleter::impl {
+    void* obj;
+    free_deleter_impl(void* obj) : impl(deleter()), obj(obj) {}
+    virtual ~free_deleter_impl() override { std::free(obj); }
+};
+/// \endcond
+
+inline
+deleter
+deleter::share() {
+    if (!_impl) {
+        return deleter();
+    }
+    if (is_raw_object()) {
+        _impl = new free_deleter_impl(to_raw_object());
+    }
+    ++_impl->refs;
+    return deleter(_impl);
+}
+
+// Appends 'd' to the chain of deleters. Avoids allocation if possible. For
+// performance reasons the current chain should be shorter and 'd' should be
+// longer.
+inline
+void deleter::append(deleter d) {
+    if (!d._impl) {
+        return;
+    }
+    impl* next_impl = _impl;
+    deleter* next_d = this;
+    while (next_impl) {
+        assert(next_impl != d._impl);
+        if (is_raw_object(next_impl)) {
+            next_d->_impl = next_impl = new free_deleter_impl(to_raw_object(next_impl));
+        }
+        if (next_impl->refs != 1) {
+            next_d->_impl = next_impl = make_object_deleter_impl(std::move(next_impl->next), deleter(next_impl));
+        }
+        next_d = &next_impl->next;
+        next_impl = next_d->_impl;
+    }
+    next_d->_impl = d._impl;
+    d._impl = nullptr;
+}
+
+/// Makes a deleter that calls \c std::free() when it is destroyed.
+///
+/// \param obj object to free.
+/// \related deleter
+inline
+deleter
+make_free_deleter(void* obj) {
+    if (!obj) {
+        return deleter();
+    }
+    return deleter(deleter::raw_object_tag(), obj);
+}
+
+/// Makes a deleter that calls \c std::free() when it is destroyed, as well
+/// as invoking the encapsulated action of another deleter.
+///
+/// \param d deleter to invoke.
+/// \param obj object to free.
+/// \related deleter
+inline
+deleter
+make_free_deleter(deleter next, void* obj) {
+    return make_deleter(std::move(next), [obj] () mutable { std::free(obj); });
+}
+
+/// \see make_deleter(Object)
+/// \related deleter
+template <typename T>
+inline
+deleter
+make_object_deleter(T&& obj) {
+    return deleter{make_object_deleter_impl(deleter(), std::move(obj))};
+}
+
+/// \see make_deleter(deleter, Object)
+/// \related deleter
+template <typename T>
+inline
+deleter
+make_object_deleter(deleter d, T&& obj) {
+    return deleter{make_object_deleter_impl(std::move(d), std::move(obj))};
+}
+
+
+
+
+
+template <typename CharType>
+class temporary_buffer {
+    static_assert(sizeof(CharType) == 1, "must buffer stream of bytes");
+    CharType* _buffer;
+    size_t _size;
+    deleter _deleter;
+public:
+    explicit temporary_buffer(size_t size)
+        : _buffer(static_cast<CharType*>(malloc(size * sizeof(CharType)))), _size(size)
+        , _deleter(make_free_deleter(_buffer)) {
+        if (size && !_buffer) {
+            throw std::bad_alloc();
+        }
+    }
+    //explicit temporary_buffer(CharType* borrow, size_t size) : _buffer(borrow), _size(size) {}
+    /// Creates an empty \c temporary_buffer that does not point at anything.
+    temporary_buffer()
+        : _buffer(nullptr)
+        , _size(0) {}
+    temporary_buffer(const temporary_buffer&) = delete;
+    /// Moves a \c temporary_buffer.
+    temporary_buffer(temporary_buffer&& x) noexcept : _buffer(x._buffer), _size(x._size), _deleter(std::move(x._deleter)) {
+        x._buffer = nullptr;
+        x._size = 0;
+    }
+    temporary_buffer(CharType* buf, size_t size, deleter d)
+        : _buffer(buf), _size(size), _deleter(std::move(d)) {}
+    temporary_buffer(const CharType* src, size_t size) : temporary_buffer(size) {
+        std::copy_n(src, size, _buffer);
+    }
+    void operator=(const temporary_buffer&) = delete;
+    /// Moves a \c temporary_buffer.
+    temporary_buffer& operator=(temporary_buffer&& x) {
+        if (this != &x) {
+            _buffer = x._buffer;
+            _size = x._size;
+            _deleter = std::move(x._deleter);
+            x._buffer = nullptr;
+            x._size = 0;
+        }
+        return *this;
+    }
+    /// Gets a pointer to the beginning of the buffer.
+    const CharType* get() const { return _buffer; }
+    /// Gets a writable pointer to the beginning of the buffer.  Use only
+    /// when you are certain no user expects the buffer data not to change.
+    CharType* get_write() { return _buffer; }
+    /// Gets the buffer size.
+    size_t size() const { return _size; }
+    /// Gets a pointer to the beginning of the buffer.
+    const CharType* begin() const { return _buffer; }
+    /// Gets a pointer to the end of the buffer.
+    const CharType* end() const { return _buffer + _size; }
+    temporary_buffer prefix(size_t size) && {
+        auto ret = std::move(*this);
+        ret._size = size;
+        return ret;
+    }
+    CharType operator[](size_t pos) const {
+        return _buffer[pos];
+    }
+    bool empty() const { return !size(); }
+    explicit operator bool() const { return size(); }
+    temporary_buffer share() {
+        return temporary_buffer(_buffer, _size, _deleter.share());
+    }
+    temporary_buffer share(size_t pos, size_t len) {
+        auto ret = share();
+        ret._buffer += pos;
+        ret._size = len;
+        return ret;
+    }
+    void trim_front(size_t pos) {
+        _buffer += pos;
+        _size -= pos;
+    }
+    void trim(size_t pos) {
+        _size = pos;
+    }
+    deleter release() {
+        return std::move(_deleter);
+    }
+    static temporary_buffer aligned(size_t alignment, size_t size) {
+        void *ptr = nullptr;
+        auto ret = ::posix_memalign(&ptr, alignment, size * sizeof(CharType));
+        auto buf = static_cast<CharType*>(ptr);
+        if (ret) {
+            throw std::bad_alloc();
+        }
+        return temporary_buffer(buf, size, make_free_deleter(buf));
+    }
+
+    /// Compare contents of this buffer with another buffer for equality
+    ///
+    /// \param o buffer to compare with
+    /// \return true if and only if contents are the same
+    bool operator==(const temporary_buffer<char>& o) const {
+        return size() == o.size() && std::equal(begin(), end(), o.begin());
+    }
+
+    /// Compare contents of this buffer with another buffer for inequality
+    ///
+    /// \param o buffer to compare with
+    /// \return true if and only if contents are not the same
+    bool operator!=(const temporary_buffer<char>& o) const {
+        return !(*this == o);
+    }
+};
+
+template <typename char_type, typename Size, Size max_size>
+class basic_sstring;
+
+using sstring = basic_sstring<char, uint32_t, 15>;
+
+template <typename string_type = sstring, typename T>
+inline string_type to_sstring(T value);
+
+template <typename char_type, typename Size, Size max_size>
+class basic_sstring {
+    static_assert(
+            (std::is_same<char_type, char>::value
+             || std::is_same<char_type, signed char>::value
+             || std::is_same<char_type, unsigned char>::value),
+            "basic_sstring only supports single byte char types");
+    union contents {
+        struct external_type {
+            char_type* str;
+            Size size;
+            int8_t pad;
+        } external;
+        struct internal_type {
+            char_type str[max_size];
+            int8_t size;
+        } internal;
+        static_assert(sizeof(external_type) <= sizeof(internal_type), "max_size too small");
+        static_assert(max_size <= 127, "max_size too large");
+    } u;
+    bool is_internal() const noexcept {
+        return u.internal.size >= 0;
+    }
+    bool is_external() const noexcept {
+        return !is_internal();
+    }
+    const char_type* str() const {
+        return is_internal() ? u.internal.str : u.external.str;
+    }
+    char_type* str() {
+        return is_internal() ? u.internal.str : u.external.str;
+    }
+
+    template <typename string_type, typename T>
+    static inline string_type to_sstring_sprintf(T value, const char* fmt) {
+        char tmp[sizeof(value) * 3 + 2];
+        auto len = std::sprintf(tmp, fmt, value);
+        using ch_type = typename string_type::value_type;
+        return string_type(reinterpret_cast<ch_type*>(tmp), len);
+    }
+
+    template <typename string_type>
+    static inline string_type to_sstring(int value) {
+        return to_sstring_sprintf<string_type>(value, "%d");
+    }
+
+    template <typename string_type>
+    static inline string_type to_sstring(unsigned value) {
+        return to_sstring_sprintf<string_type>(value, "%u");
+    }
+
+    template <typename string_type>
+    static inline string_type to_sstring(long value) {
+        return to_sstring_sprintf<string_type>(value, "%ld");
+    }
+
+    template <typename string_type>
+    static inline string_type to_sstring(unsigned long value) {
+        return to_sstring_sprintf<string_type>(value, "%lu");
+    }
+
+    template <typename string_type>
+    static inline string_type to_sstring(long long value) {
+        return to_sstring_sprintf<string_type>(value, "%lld");
+    }
+
+    template <typename string_type>
+    static inline string_type to_sstring(unsigned long long value) {
+        return to_sstring_sprintf<string_type>(value, "%llu");
+    }
+
+    template <typename string_type>
+    static inline string_type to_sstring(float value) {
+        return to_sstring_sprintf<string_type>(value, "%g");
+    }
+
+    template <typename string_type>
+    static inline string_type to_sstring(double value) {
+        return to_sstring_sprintf<string_type>(value, "%g");
+    }
+
+    template <typename string_type>
+    static inline string_type to_sstring(long double value) {
+        return to_sstring_sprintf<string_type>(value, "%Lg");
+    }
+
+    template <typename string_type>
+    static inline string_type to_sstring(const char* value) {
+        return string_type(value);
+    }
+
+    template <typename string_type>
+    static inline string_type to_sstring(sstring value) {
+        return value;
+    }
+
+    template <typename string_type>
+    static inline string_type to_sstring(const temporary_buffer<char>& buf) {
+        return string_type(buf.get(), buf.size());
+    }
+public:
+    using value_type = char_type;
+    using traits_type = std::char_traits<char_type>;
+    using allocator_type = std::allocator<char_type>;
+    using reference = char_type&;
+    using const_reference = const char_type&;
+    using pointer = char_type*;
+    using const_pointer = const char_type*;
+    using iterator = char_type*;
+    using const_iterator = const char_type*;
+    // FIXME: add reverse_iterator and friend
+    using difference_type = ssize_t;  // std::make_signed_t<Size> can be too small
+    using size_type = Size;
+    static constexpr size_type  npos = static_cast<size_type>(-1);
+public:
+    struct initialized_later {};
+
+    basic_sstring() noexcept {
+        u.internal.size = 0;
+        u.internal.str[0] = '\0';
+    }
+    basic_sstring(const basic_sstring& x) {
+        if (x.is_internal()) {
+            u.internal = x.u.internal;
+        } else {
+            u.internal.size = -1;
+            u.external.str = reinterpret_cast<char_type*>(std::malloc(x.u.external.size + 1));
+            if (!u.external.str) {
+                throw std::bad_alloc();
+            }
+            std::copy(x.u.external.str, x.u.external.str + x.u.external.size + 1, u.external.str);
+            u.external.size = x.u.external.size;
+        }
+    }
+    basic_sstring(basic_sstring&& x) noexcept {
+        u = x.u;
+        x.u.internal.size = 0;
+        x.u.internal.str[0] = '\0';
+    }
+    basic_sstring(initialized_later, size_t size) {
+        if (size_type(size) != size) {
+            throw std::overflow_error("sstring overflow");
+        }
+        if (size + 1 <= sizeof(u.internal.str)) {
+            u.internal.str[size] = '\0';
+            u.internal.size = size;
+        } else {
+            u.internal.size = -1;
+            u.external.str = reinterpret_cast<char_type*>(std::malloc(size + 1));
+            if (!u.external.str) {
+                throw std::bad_alloc();
+            }
+            u.external.size = size;
+            u.external.str[size] = '\0';
+        }
+    }
+    basic_sstring(const char_type* x, size_t size) {
+        if (size_type(size) != size) {
+            throw std::overflow_error("sstring overflow");
+        }
+        if (size + 1 <= sizeof(u.internal.str)) {
+            std::copy(x, x + size, u.internal.str);
+            u.internal.str[size] = '\0';
+            u.internal.size = size;
+        } else {
+            u.internal.size = -1;
+            u.external.str = reinterpret_cast<char_type*>(std::malloc(size + 1));
+            if (!u.external.str) {
+                throw std::bad_alloc();
+            }
+            u.external.size = size;
+            std::copy(x, x + size, u.external.str);
+            u.external.str[size] = '\0';
+        }
+    }
+    basic_sstring(size_t size, char_type x) : basic_sstring(initialized_later(), size) {
+        memset(begin(), x, size);
+    }
+    basic_sstring(const char* x) : basic_sstring(reinterpret_cast<const char_type*>(x), std::strlen(x)) {}
+    basic_sstring(std::basic_string<char_type>& x) : basic_sstring(x.c_str(), x.size()) {}
+    basic_sstring(std::initializer_list<char_type> x) : basic_sstring(x.begin(), x.end() - x.begin()) {}
+    basic_sstring(const char_type* b, const char_type* e) : basic_sstring(b, e - b) {}
+    basic_sstring(const std::basic_string<char_type>& s)
+        : basic_sstring(s.data(), s.size()) {}
+    template <typename InputIterator>
+    basic_sstring(InputIterator first, InputIterator last)
+            : basic_sstring(initialized_later(), std::distance(first, last)) {
+        std::copy(first, last, begin());
+    }
+    ~basic_sstring() noexcept {
+        if (is_external()) {
+            std::free(u.external.str);
+        }
+    }
+    basic_sstring& operator=(const basic_sstring& x) {
+        basic_sstring tmp(x);
+        swap(tmp);
+        return *this;
+    }
+    basic_sstring& operator=(basic_sstring&& x) noexcept {
+        if (this != &x) {
+            swap(x);
+            x.reset();
+        }
+        return *this;
+    }
+    operator std::basic_string<char_type>() const {
+        return { str(), size() };
+    }
+    size_t size() const noexcept {
+        return is_internal() ? u.internal.size : u.external.size;
+    }
+
+    size_t length() const noexcept {
+        return size();
+    }
+
+    size_t find(char_type t, size_t pos = 0) const noexcept {
+        const char_type* it = str() + pos;
+        const char_type* end = str() + size();
+        while (it < end) {
+            if (*it == t) {
+                return it - str();
+            }
+            it++;
+        }
+        return npos;
+    }
+
+    size_t find(const basic_sstring& s, size_t pos = 0) const noexcept {
+        const char_type* it = str() + pos;
+        const char_type* end = str() + size();
+        const char_type* c_str = s.str();
+        const char_type* c_str_end = s.str() + s.size();
+
+        while (it < end) {
+            auto i = it;
+            auto j = c_str;
+            while ( i < end && j < c_str_end && *i == *j) {
+                i++;
+                j++;
+            }
+            if (j == c_str_end) {
+                return it - str();
+            }
+            it++;
+        }
+        return npos;
+    }
+
+    /**
+     * find_last_of find the last occurrence of c in the string.
+     * When pos is specified, the search only includes characters
+     * at or before position pos.
+     *
+     */
+    size_t find_last_of (char_type c, size_t pos = npos) const noexcept {
+        const char_type* str_start = str();
+        if (size()) {
+            if (pos >= size()) {
+                pos = size() - 1;
+            }
+            const char_type* p = str_start + pos + 1;
+            do {
+                p--;
+                if (*p == c) {
+                    return (p - str_start);
+                }
+            } while (p != str_start);
+        }
+        return npos;
+    }
+
+    /**
+     *  Append a C substring.
+     *  @param s  The C string to append.
+     *  @param n  The number of characters to append.
+     *  @return  Reference to this string.
+     */
+    basic_sstring& append (const char_type* s, size_t n) {
+        basic_sstring ret(initialized_later(), size() + n);
+        std::copy(begin(), end(), ret.begin());
+        std::copy(s, s + n, ret.begin() + size());
+        *this = std::move(ret);
+        return *this;
+    }
+
+    /**
+     *  Resize string.
+     *  @param n  new size.
+     *  @param c  if n greater than current size character to fill newly allocated space with.
+     */
+    void resize(size_t n, const char_type c  = '\0') {
+        if (n > size()) {
+            *this += sstring(n - size(), c);
+        } else if (n < size()) {
+            if (is_internal()) {
+                u.internal.size = n;
+            } else if (n + 1 <= sizeof(u.internal.str)) {
+                *this = sstring(u.external.str, n);
+            } else {
+                u.external.size = n;
+            }
+        }
+    }
+
+    /**
+     *  Replace characters with a value of a C style substring.
+     *
+     */
+    basic_sstring& replace(size_type pos, size_type n1, const char_type* s,
+             size_type n2) {
+        if (pos > size()) {
+            throw std::out_of_range("sstring::replace out of range");
+        }
+
+        if (n1 > size() - pos) {
+            n1 = size() - pos;
+        }
+
+        if (n1 == n2) {
+            if (n2) {
+                std::copy(s, s + n2, begin() + pos);
+            }
+            return *this;
+        }
+        basic_sstring ret(initialized_later(), size() + n2 - n1);
+        char_type* p= ret.begin();
+        std::copy(begin(), begin() + pos, p);
+        p += pos;
+        if (n2) {
+            std::copy(s, s + n2, p);
+        }
+        p += n2;
+        std::copy(begin() + pos + n1, end(), p);
+        *this = std::move(ret);
+        return *this;
+    }
+
+    template <class InputIterator>
+    basic_sstring& replace (const_iterator i1, const_iterator i2,
+            InputIterator first, InputIterator last) {
+        if (i1 < begin() || i1 > end() || i2 < begin()) {
+            throw std::out_of_range("sstring::replace out of range");
+        }
+        if (i2 > end()) {
+            i2 = end();
+        }
+
+        if (i2 - i1 == last - first) {
+            //in place replacement
+            std::copy(first, last, const_cast<char_type*>(i1));
+            return *this;
+        }
+        basic_sstring ret(initialized_later(), size() + (last - first) - (i2 - i1));
+        char_type* p = ret.begin();
+        p = std::copy(cbegin(), i1, p);
+        p = std::copy(first, last, p);
+        std::copy(i2, cend(), p);
+        *this = std::move(ret);
+        return *this;
+    }
+
+    iterator erase(iterator first, iterator last) {
+        size_t pos = first - begin();
+        replace(pos, last - first, nullptr, 0);
+        return begin() + pos;
+    }
+
+    /**
+     * Inserts additional characters into the string right before
+     * the character indicated by p.
+     */
+    template <class InputIterator>
+    void insert(const_iterator p, InputIterator beg, InputIterator end) {
+        replace(p, p, beg, end);
+    }
+
+    /**
+     *  Returns a read/write reference to the data at the last
+     *  element of the string.
+     *  This function shall not be called on empty strings.
+     */
+    reference
+    back() noexcept {
+        return operator[](size() - 1);
+    }
+
+    /**
+     *  Returns a  read-only (constant) reference to the data at the last
+     *  element of the string.
+     *  This function shall not be called on empty strings.
+     */
+    const_reference
+    back() const noexcept {
+        return operator[](size() - 1);
+    }
+
+    basic_sstring substr(size_t from, size_t len = npos)  const {
+        if (from > size()) {
+            throw std::out_of_range("sstring::substr out of range");
+        }
+        if (len > size() - from) {
+            len = size() - from;
+        }
+        if (len == 0) {
+            return "";
+        }
+        return { str() + from , len };
+    }
+
+    const char_type& at(size_t pos) const {
+        if (pos >= size()) {
+            throw std::out_of_range("sstring::at out of range");
+        }
+        return *(str() + pos);
+    }
+
+    char_type& at(size_t pos) {
+        if (pos >= size()) {
+            throw std::out_of_range("sstring::at out of range");
+        }
+        return *(str() + pos);
+    }
+
+    bool empty() const noexcept {
+        return u.internal.size == 0;
+    }
+    void reset() noexcept {
+        if (is_external()) {
+            std::free(u.external.str);
+        }
+        u.internal.size = 0;
+        u.internal.str[0] = '\0';
+    }
+    temporary_buffer<char_type> release() && {
+        if (is_external()) {
+            auto ptr = u.external.str;
+            auto size = u.external.size;
+            u.external.str = nullptr;
+            u.external.size = 0;
+            return temporary_buffer<char_type>(ptr, size, make_free_deleter(ptr));
+        } else {
+            auto buf = temporary_buffer<char_type>(u.internal.size);
+            std::copy(u.internal.str, u.internal.str + u.internal.size, buf.get_write());
+            u.internal.size = 0;
+            u.internal.str[0] = '\0';
+            return buf;
+        }
+    }
+    int compare(const basic_sstring& x) const noexcept {
+        auto n = traits_type::compare(begin(), x.begin(), std::min(size(), x.size()));
+        if (n != 0) {
+            return n;
+        }
+        if (size() < x.size()) {
+            return -1;
+        } else if (size() > x.size()) {
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+
+    int compare(size_t pos, size_t sz, const basic_sstring& x) const {
+        if (pos > size()) {
+            throw std::out_of_range("pos larger than string size");
+        }
+
+        sz = std::min(size() - pos, sz);
+        auto n = traits_type::compare(begin() + pos, x.begin(), std::min(sz, x.size()));
+        if (n != 0) {
+            return n;
+        }
+        if (sz < x.size()) {
+            return -1;
+        } else if (sz > x.size()) {
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+
+    void swap(basic_sstring& x) noexcept {
+        contents tmp;
+        tmp = x.u;
+        x.u = u;
+        u = tmp;
+    }
+    char_type* data() {
+        return str();
+    }
+    const char_type* data() const {
+        return str();
+    }
+    const char_type* c_str() const {
+        return str();
+    }
+    const char_type* begin() const { return str(); }
+    const char_type* end() const { return str() + size(); }
+    const char_type* cbegin() const { return str(); }
+    const char_type* cend() const { return str() + size(); }
+    char_type* begin() { return str(); }
+    char_type* end() { return str() + size(); }
+    bool operator==(const basic_sstring& x) const {
+        return size() == x.size() && std::equal(begin(), end(), x.begin());
+    }
+    bool operator!=(const basic_sstring& x) const {
+        return !operator==(x);
+    }
+    bool operator<(const basic_sstring& x) const {
+        return compare(x) < 0;
+    }
+    basic_sstring operator+(const basic_sstring& x) const {
+        basic_sstring ret(initialized_later(), size() + x.size());
+        std::copy(begin(), end(), ret.begin());
+        std::copy(x.begin(), x.end(), ret.begin() + size());
+        return ret;
+    }
+    basic_sstring& operator+=(const basic_sstring& x) {
+        return *this = *this + x;
+    }
+    char_type& operator[](size_type pos) {
+        return str()[pos];
+    }
+    const char_type& operator[](size_type pos) const {
+        return str()[pos];
+    }
+
+    operator std::basic_string_view<char_type>() const {
+        return std::basic_string_view<char_type>(str(), size());
+    }
+
+    template <typename string_type, typename T>
+    friend inline string_type to_sstring(T value);
+};
+template <typename char_type, typename Size, Size max_size>
+constexpr Size basic_sstring<char_type, Size, max_size>::npos;
+
+template <typename char_type, typename size_type, size_type Max, size_type N>
+inline
+basic_sstring<char_type, size_type, Max>
+operator+(const char(&s)[N], const basic_sstring<char_type, size_type, Max>& t) {
+    using sstring = basic_sstring<char_type, size_type, Max>;
+    // don't copy the terminating NUL character
+    sstring ret(typename sstring::initialized_later(), N-1 + t.size());
+    auto p = std::copy(std::begin(s), std::end(s)-1, ret.begin());
+    std::copy(t.begin(), t.end(), p);
+    return ret;
+}
+
+template <size_t N>
+static inline
+size_t str_len(const char(&s)[N]) { return N - 1; }
+
+template <size_t N>
+static inline
+const char* str_begin(const char(&s)[N]) { return s; }
+
+template <size_t N>
+static inline
+const char* str_end(const char(&s)[N]) { return str_begin(s) + str_len(s); }
+
+template <typename char_type, typename size_type, size_type max_size>
+static inline
+const char_type* str_begin(const basic_sstring<char_type, size_type, max_size>& s) { return s.begin(); }
+
+template <typename char_type, typename size_type, size_type max_size>
+static inline
+const char_type* str_end(const basic_sstring<char_type, size_type, max_size>& s) { return s.end(); }
+
+template <typename char_type, typename size_type, size_type max_size>
+static inline
+size_type str_len(const basic_sstring<char_type, size_type, max_size>& s) { return s.size(); }
+
+template <typename First, typename Second, typename... Tail>
+static inline
+const size_t str_len(const First& first, const Second& second, const Tail&... tail) {
+    return str_len(first) + str_len(second, tail...);
+}
+
+template <typename char_type, typename size_type, size_type max_size>
+inline
+void swap(basic_sstring<char_type, size_type, max_size>& x,
+          basic_sstring<char_type, size_type, max_size>& y) noexcept
+{
+    return x.swap(y);
+}
+
+template <typename char_type, typename size_type, size_type max_size, typename char_traits>
+inline
+std::basic_ostream<char_type, char_traits>&
+operator<<(std::basic_ostream<char_type, char_traits>& os,
+        const basic_sstring<char_type, size_type, max_size>& s) {
+    return os.write(s.begin(), s.size());
+}
+
+template <typename char_type, typename size_type, size_type max_size, typename char_traits>
+inline
+std::basic_istream<char_type, char_traits>&
+operator>>(std::basic_istream<char_type, char_traits>& is,
+        basic_sstring<char_type, size_type, max_size>& s) {
+    std::string tmp;
+    is >> tmp;
+    s = tmp;
+    return is;
+}
+
+namespace std {
+
+template <typename char_type, typename size_type, size_type max_size>
+struct hash<basic_sstring<char_type, size_type, max_size>> {
+    size_t operator()(const basic_sstring<char_type, size_type, max_size>& s) const {
+        return std::hash<std::basic_string_view<char_type>>()(s);
+    }
+};
+
+}
+
+static inline
+char* copy_str_to(char* dst) {
+    return dst;
+}
+
+template <typename Head, typename... Tail>
+static inline
+char* copy_str_to(char* dst, const Head& head, const Tail&... tail) {
+    return copy_str_to(std::copy(str_begin(head), str_end(head), dst), tail...);
+}
+
+template <typename String = sstring, typename... Args>
+static String make_sstring(Args&&... args)
+{
+    String ret(sstring::initialized_later(), str_len(args...));
+    copy_str_to(ret.begin(), args...);
+    return ret;
+}
+
+template <typename string_type = sstring, typename T>
+inline string_type to_sstring(T value) {
+    return sstring::to_sstring<string_type>(value);
+}
+
+namespace std {
+template <typename T>
+inline
+std::ostream& operator<<(std::ostream& os, const std::vector<T>& v) {
+    bool first = true;
+    os << "{";
+    for (auto&& elem : v) {
+        if (!first) {
+            os << ", ";
+        } else {
+            first = false;
+        }
+        os << elem;
+    }
+    os << "}";
+    return os;
+}
+
+template <typename Key, typename T, typename Hash, typename KeyEqual, typename Allocator>
+std::ostream& operator<<(std::ostream& os, const std::unordered_map<Key, T, Hash, KeyEqual, Allocator>& v) {
+    bool first = true;
+    os << "{";
+    for (auto&& elem : v) {
+        if (!first) {
+            os << ", ";
+        } else {
+            first = false;
+        }
+        os << "{ " << elem.first << " -> " << elem.second << "}";
+    }
+    os << "}";
+    return os;
+}
+}
 
 
 
@@ -1595,6 +2731,632 @@ class promise<void> : public promise<> {};
 
 
 
+namespace internal {
+
+// Execution wraps lreferences in reference_wrapper so that the caller is forced
+// to use seastar::ref(). Then when the function is actually called the
+// reference is unwrapped. However, we need to distinguish between functions
+// which argument is lvalue reference and functions that take
+// reference_wrapper<> as an argument and not unwrap the latter. To solve this
+// issue reference_wrapper_for_es type is used for wrappings done automatically
+// by execution stage.
+template<typename T>
+struct reference_wrapper_for_es : reference_wrapper<T> {
+    reference_wrapper_for_es(reference_wrapper <T> rw) noexcept
+        : reference_wrapper<T>(std::move(rw)) {}
+};
+
+template<typename T>
+struct wrap_for_es {
+    using type = T;
+};
+
+template<typename T>
+struct wrap_for_es<T&> {
+    using type = reference_wrapper_for_es<T>;
+};
+
+template<typename T>
+struct wrap_for_es<T&&> {
+    using type = T;
+};
+
+template<typename T>
+decltype(auto) unwrap_for_es(T&& object) {
+    return std::forward<T>(object);
+}
+
+template<typename T>
+std::reference_wrapper<T> unwrap_for_es(reference_wrapper_for_es<T> ref) {
+    return std::reference_wrapper<T>(ref.get());
+}
+
+}
+/// \endcond
+
+/// Base execution stage class
+class execution_stage {
+public:
+    struct stats {
+        uint64_t tasks_scheduled = 0;
+        uint64_t tasks_preempted = 0;
+        uint64_t function_calls_enqueued = 0;
+        uint64_t function_calls_executed = 0;
+    };
+protected:
+    bool _empty = true;
+    bool _flush_scheduled = false;
+    stats _stats;
+    sstring _name;
+    // metrics::metric_group _metric_group;
+protected:
+    virtual void do_flush() noexcept = 0;
+public:
+    explicit execution_stage(const sstring& name);
+    virtual ~execution_stage();
+
+    execution_stage(const execution_stage&) = delete;
+
+    /// Move constructor
+    ///
+    /// \warning It is illegal to move execution_stage after any operation has
+    /// been pushed to it. The only reason why the move constructor is not
+    /// deleted is the fact that C++14 does not guarantee return value
+    /// optimisation which is required by make_execution_stage().
+    execution_stage(execution_stage&&);
+
+    /// Returns execution stage name
+    const sstring& name() const noexcept { return _name; }
+
+    /// Returns execution stage usage statistics
+    const stats& get_stats() const noexcept { return _stats; }
+
+    /// Flushes execution stage
+    ///
+    /// Ensures that a task which would execute all queued operations is
+    /// scheduled. Does not schedule a new task if there is one already pending
+    /// or the queue is empty.
+    ///
+    /// \return true if a new task has been scheduled
+    bool flush() noexcept {
+        if (_empty || _flush_scheduled) {
+            return false;
+        }
+        _stats.tasks_scheduled++;
+        schedule_normal(make_task([this] {
+            do_flush();
+            _flush_scheduled = false;
+        }));
+        _flush_scheduled = true;
+        return true;
+    };
+
+    /// Checks whether there are pending operations.
+    ///
+    /// \return true if there is at least one queued operation
+    bool poll() const noexcept {
+        return !_empty;
+    }
+};
+/*----------------------------------execution_statge-----------------------------------------------------------------------------*/
+
+/// \cond internal
+namespace internal {
+
+class execution_stage_manager {
+    std::vector<execution_stage*> _execution_stages;
+    std::unordered_map<sstring, execution_stage*> _stages_by_name;
+private:
+    execution_stage_manager() = default;
+    execution_stage_manager(const execution_stage_manager&) = delete;
+    execution_stage_manager(execution_stage_manager&&) = delete;
+public:
+    void register_execution_stage(execution_stage& stage) {
+        auto ret = _stages_by_name.emplace(stage.name(), &stage);
+        if (!ret.second) {
+            throw std::runtime_error("error registering execution stage: name already in use");
+        }
+        try {
+            _execution_stages.push_back(&stage);
+        } catch (...) {
+            _stages_by_name.erase(stage.name());
+            throw;
+        }
+    }
+    void unregister_execution_stage(execution_stage& stage) noexcept {
+        auto it = std::find(_execution_stages.begin(), _execution_stages.end(), &stage);
+        _execution_stages.erase(it);
+        _stages_by_name.erase(stage.name());
+    }
+    void update_execution_stage_registration(execution_stage& old_es, execution_stage& new_es) noexcept {
+        auto it = std::find(_execution_stages.begin(), _execution_stages.end(), &old_es);
+        *it = &new_es;
+        _stages_by_name.find(new_es.name())->second = &new_es;
+    }
+
+    execution_stage* get_stage(const sstring& name) {
+        return _stages_by_name[name];
+    }
+
+    bool flush() noexcept {
+        bool did_work = false;
+        for (auto&& stage : _execution_stages) {
+            did_work |= stage->flush();
+        }
+        return did_work;
+    }
+    bool poll() const noexcept {
+        for (auto&& stage : _execution_stages) {
+            if (stage->poll()) {
+                return true;
+            }
+        }
+        return false;
+    }
+public:
+    static execution_stage_manager& get() noexcept {
+        static thread_local execution_stage_manager instance;
+        return instance;
+    }
+};
+
+}
+
+
+
+/*----------------------------------tuple_utils-------------------------------------------------------*/
+
+
+
+#include <tuple>
+#include <utility>
+
+/// \cond internal
+namespace internal {
+
+template<typename Tuple>
+Tuple untuple(Tuple t) {
+    return std::move(t);
+}
+
+template<typename T>
+T untuple(std::tuple<T> t) {
+    return std::get<0>(std::move(t));
+}
+
+template<typename Tuple, typename Function, size_t... I>
+void tuple_for_each_helper(Tuple&& t, Function&& f, std::index_sequence<I...>&&) {
+    auto ignore_me = { (f(std::get<I>(std::forward<Tuple>(t))), 1)... };
+    (void)ignore_me;
+}
+
+template<typename Tuple, typename MapFunction, size_t... I>
+auto tuple_map_helper(Tuple&& t, MapFunction&& f, std::index_sequence<I...>&&) {
+    return std::make_tuple(f(std::get<I>(std::forward<Tuple>(t)))...);
+}
+
+template<size_t I, typename IndexSequence>
+struct prepend;
+
+template<size_t I, size_t... Is>
+struct prepend<I, std::index_sequence<Is...>> {
+    using type = std::index_sequence<I, Is...>;
+};
+
+template<template<typename> class Filter, typename Tuple, typename IndexSequence>
+struct tuple_filter;
+
+template<template<typename> class Filter, typename T, typename... Ts, size_t I, size_t... Is>
+struct tuple_filter<Filter, std::tuple<T, Ts...>, std::index_sequence<I, Is...>> {
+    using tail = typename tuple_filter<Filter, std::tuple<Ts...>, std::index_sequence<Is...>>::type;
+    using type = std::conditional_t<Filter<T>::value, typename prepend<I, tail>::type, tail>;
+};
+
+template<template<typename> class Filter>
+struct tuple_filter<Filter, std::tuple<>, std::index_sequence<>> {
+    using type = std::index_sequence<>;
+};
+template<typename Tuple, size_t... I>
+auto tuple_filter_helper(Tuple&& t, std::index_sequence<I...>&&) {
+    return std::make_tuple(std::get<I>(std::forward<Tuple>(t))...);
+}
+/// \addtogroup utilities
+/// @{
+
+/// Applies type transformation to all types in tuple
+///
+/// Member type `type` is set to a tuple type which is a result of applying
+/// transformation `MapClass<T>::type` to each element `T` of the input tuple
+/// type.
+///
+/// \tparam MapClass class template defining type transformation
+/// \tparam Tuple input tuple type
+template<template<typename> class MapClass, typename Tuple>
+struct tuple_map_types;
+
+/// @}
+
+template<template<typename> class MapClass, typename... Elements>
+struct tuple_map_types<MapClass, std::tuple<Elements...>> {
+    using type = std::tuple<typename MapClass<Elements>::type...>;
+};
+
+/// \addtogroup utilities
+/// @{
+
+/// Filters elements in tuple by their type
+///
+/// Returns a tuple containing only those elements which type `T` caused
+/// expression `FilterClass<T>::value` to be true.
+///
+/// \tparam FilterClass class template having an element value set to true for elements that
+///                     should be present in the result
+/// \param t tuple to filter
+/// \return a tuple contaning elements which type passed the test
+template<template<typename> class FilterClass, typename... Elements>
+auto tuple_filter_by_type(const std::tuple<Elements...>& t) {
+    using sequence = typename internal::tuple_filter<FilterClass, std::tuple<Elements...>,
+                                                     std::index_sequence_for<Elements...>>::type;
+    return internal::tuple_filter_helper(t, sequence());
+}
+template<template<typename> class FilterClass, typename... Elements>
+auto tuple_filter_by_type(std::tuple<Elements...>&& t) {
+    using sequence = typename internal::tuple_filter<FilterClass, std::tuple<Elements...>,
+                                                     std::index_sequence_for<Elements...>>::type;
+    return internal::tuple_filter_helper(std::move(t), sequence());
+}
+
+/// Applies function to all elements in tuple
+///
+/// Applies given function to all elements in the tuple and returns a tuple
+/// of results.
+///
+/// \param t original tuple
+/// \param f function to apply
+/// \return tuple of results returned by f for each element in t
+template<typename Function, typename... Elements>
+auto tuple_map(const std::tuple<Elements...>& t, Function&& f) {
+    return internal::tuple_map_helper(t, std::forward<Function>(f),
+                                      std::index_sequence_for<Elements...>());
+}
+template<typename Function, typename... Elements>
+auto tuple_map(std::tuple<Elements...>&& t, Function&& f) {
+    return internal::tuple_map_helper(std::move(t), std::forward<Function>(f),
+                                      std::index_sequence_for<Elements...>());
+}
+/// Iterate over all elements in tuple
+///
+/// Iterates over given tuple and calls the specified function for each of
+/// it elements.
+///
+/// \param t a tuple to iterate over
+/// \param f function to call for each tuple element
+template<typename Function, typename... Elements>
+void tuple_for_each(const std::tuple<Elements...>& t, Function&& f) {
+    return internal::tuple_for_each_helper(t, std::forward<Function>(f),
+                                           std::index_sequence_for<Elements...>());
+}
+template<typename Function, typename... Elements>
+void tuple_for_each(std::tuple<Elements...>& t, Function&& f) {
+    return internal::tuple_for_each_helper(t, std::forward<Function>(f),
+                                           std::index_sequence_for<Elements...>());
+}
+template<typename Function, typename... Elements>
+void tuple_for_each(std::tuple<Elements...>&& t, Function&& f) {
+    return internal::tuple_for_each_helper(std::move(t), std::forward<Function>(f),
+                                           std::index_sequence_for<Elements...>());
+}
+}
+
+/*--------------------------------------------------------------------------------------------------*/
+
+
+
+
+template<typename Function, typename ReturnType, typename ArgsTuple>
+GCC6_CONCEPT(requires std::is_nothrow_move_constructible<ArgsTuple>::value)
+class concrete_execution_stage final : public execution_stage {
+    static_assert(std::is_nothrow_move_constructible<ArgsTuple>::value,
+                  "Function arguments need to be nothrow move constructible");
+
+    static constexpr size_t flush_threshold = 128;
+
+    using return_type = futurize_t<ReturnType>;
+    using promise_type = typename return_type::promise_type;
+    using input_type = typename internal::tuple_map_types<internal::wrap_for_es, ArgsTuple>::type;
+
+    struct work_item {
+        input_type _in;
+        promise_type _ready;
+
+        template<typename... Args>
+        work_item(Args&&... args) : _in(std::forward<Args>(args)...) { }
+
+        work_item(work_item&& other) = delete;
+        work_item(const work_item&) = delete;
+        work_item(work_item&) = delete;
+    };
+    std::deque<work_item> _queue;
+
+    Function _function;
+private:
+    auto unwrap(input_type&& in) {
+        return tuple_map(std::move(in), [] (auto&& obj) {
+            return internal::unwrap_for_es(std::forward<decltype(obj)>(obj));
+        });
+    }
+
+    virtual void do_flush() noexcept override {
+        while (!_queue.empty()) {
+            auto& wi = _queue.front();
+            futurize<ReturnType>::apply(_function, unwrap(std::move(wi._in))).forward_to(std::move(wi._ready));
+            _queue.pop_front();
+            _stats.function_calls_executed++;
+
+            if (need_preempt()) {
+                _stats.tasks_preempted++;
+                break;
+            }
+        }
+        _empty = _queue.empty();
+    }
+public:
+    explicit concrete_execution_stage(const sstring& name, Function f)
+        : execution_stage(name)
+        , _function(std::move(f)){
+        _queue.reserve(flush_threshold);
+    }
+    template<typename... Args>
+    GCC6_CONCEPT(requires std::is_constructible<input_type, Args...>::value)
+    return_type operator()(Args&&... args) {
+        _queue.emplace_back(std::forward<Args>(args)...);
+        _empty = false;
+        _stats.function_calls_enqueued++;
+        auto f = _queue.back()._ready.get_future();
+        if (_queue.size() > flush_threshold) {
+            flush();
+        }
+        return f;
+    }
+};
+
+
+template<typename Function>
+auto make_execution_stage(const sstring& name, Function&& fn) {
+    using traits = function_traits<Function>;
+    return concrete_execution_stage<std::decay_t<Function>, typename traits::return_type,
+                                    typename traits::args_as_tuple>(name, std::forward<Function>(fn));
+}
+template<typename Ret, typename Object, typename... Args>
+auto make_execution_stage(const sstring& name, Ret (Object::*fn)(Args...)) {
+    return concrete_execution_stage<decltype(std::mem_fn(fn)), Ret, std::tuple<Object*, Args...>>(name, std::mem_fn(fn));
+}
+
+template<typename Ret, typename Object, typename... Args>
+auto make_execution_stage(const sstring& name, Ret (Object::*fn)(Args...) const) {
+    return concrete_execution_stage<decltype(std::mem_fn(fn)), Ret, std::tuple<const Object*, Args...>>(name, std::mem_fn(fn));
+}
+
+inline execution_stage::execution_stage(const sstring& name):_name(name){
+    internal::execution_stage_manager::get().register_execution_stage(*this);
+    auto undo = defer([&] { internal::execution_stage_manager::get().unregister_execution_stage(*this); });
+    undo.cancel();
+}
+
+inline execution_stage::~execution_stage()
+{
+    internal::execution_stage_manager::get().unregister_execution_stage(*this);
+}
+
+inline execution_stage::execution_stage(execution_stage&& other)
+    : _stats(other._stats)
+    , _name(std::move(other._name)){
+        internal::execution_stage_manager::get().update_execution_stage_registration(other, *this);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+/*--------------------------------------------------------------------------------------------------------------------------------*/
+
+template <typename... T>
+class stream;
+
+template <typename... T>
+class subscription;
+
+template <typename... T>
+class stream {
+    subscription<T...>* _sub = nullptr;
+    promise<> _done;
+    promise<> _ready;
+public:
+    using next_fn = std::function<future<> (T...)>;
+    stream() = default;
+    stream(const stream&) = delete;
+    stream(stream&&) = delete;
+    ~stream();
+    void operator=(const stream&) = delete;
+    void operator=(stream&&) = delete;
+
+    // Returns a subscription that reads value from this
+    // stream.
+    subscription<T...> listen();
+
+    // Returns a subscription that reads value from this
+    // stream, and also sets up the listen function.
+    subscription<T...> listen(next_fn next);
+
+    // Becomes ready when the listener is ready to accept
+    // values.  Call only once, when beginning to produce
+    // values.
+    future<> started();
+
+    // Produce a value.  Call only after started(), and after
+    // a previous produce() is ready.
+    future<> produce(T... data);
+
+    // End the stream.   Call only after started(), and after
+    // a previous produce() is ready.  No functions may be called
+    // after this.
+    void close();
+
+    // Signal an error.   Call only after started(), and after
+    // a previous produce() is ready.  No functions may be called
+    // after this.
+    template <typename E>
+    void set_exception(E ex);
+private:
+    void pause(future<> can_continue);
+    void start();
+    friend class subscription<T...>;
+};
+
+template <typename... T>
+class subscription {
+public:
+    using next_fn = typename stream<T...>::next_fn;
+private:
+    stream<T...>* _stream;
+    next_fn _next;
+private:
+    explicit subscription(stream<T...>* s);
+public:
+    subscription(subscription&& x);
+    ~subscription();
+
+    /// \brief Start receiving events from the stream.
+    ///
+    /// \param next Callback to call for each event
+    void start(std::function<future<> (T...)> next);
+
+    // Becomes ready when the stream is empty, or when an error
+    // happens (in that case, an exception is held).
+    future<> done();
+
+    friend class stream<T...>;
+};
+
+
+template <typename... T>
+inline
+stream<T...>::~stream() {
+    if (_sub) {
+        _sub->_stream = nullptr;
+    }
+}
+
+template <typename... T>
+inline
+subscription<T...>
+stream<T...>::listen() {
+    return subscription<T...>(this);
+}
+
+template <typename... T>
+inline
+subscription<T...>
+stream<T...>::listen(next_fn next) {
+    auto sub = subscription<T...>(this);
+    sub.start(std::move(next));
+    return sub;
+}
+
+template <typename... T>
+inline
+future<>
+stream<T...>::started() {
+    return _ready.get_future();
+}
+
+template <typename... T>
+inline
+future<>
+stream<T...>::produce(T... data) {
+    auto ret = futurize<void>::apply(_sub->_next, std::move(data)...);
+    if (ret.available() && !ret.failed()) {
+        // Native network stack depends on stream::produce() returning
+        // a ready future to push packets along without dropping.  As
+        // a temporary workaround, special case a ready, unfailed future
+        // and return it immediately, so that then_wrapped(), below,
+        // doesn't convert a ready future to an unready one.
+        return ret;
+    }
+    return ret.then_wrapped([this] (auto&& f) {
+        try {
+            f.get();
+        } catch (...) {
+            _done.set_exception(std::current_exception());
+            // FIXME: tell the producer to stop producing
+            throw;
+        }
+    });
+}
+
+template <typename... T>
+inline
+void
+stream<T...>::close() {
+    _done.set_value();
+}
+
+template <typename... T>
+template <typename E>
+inline
+void
+stream<T...>::set_exception(E ex) {
+    _done.set_exception(ex);
+}
+
+template <typename... T>
+inline
+subscription<T...>::subscription(stream<T...>* s)
+        : _stream(s) {
+    assert(!_stream->_sub);
+    _stream->_sub = this;
+}
+
+template <typename... T>
+inline
+void
+subscription<T...>::start(std::function<future<> (T...)> next) {
+    _next = std::move(next);
+    _stream->_ready.set_value();
+}
+
+template <typename... T>
+inline
+subscription<T...>::~subscription() {
+    if (_stream) {
+        _stream->_sub = nullptr;
+    }
+}
+
+template <typename... T>
+inline
+subscription<T...>::subscription(subscription&& x)
+    : _stream(x._stream), _next(std::move(x._next)) {
+    x._stream = nullptr;
+    if (_stream) {
+        _stream->_sub = this;
+    }
+}
+
+template <typename... T>
+inline
+future<>
+subscription<T...>::done() {
+    return _stream->_done.get_future();
+}
+
 
 
 
@@ -1616,7 +3378,7 @@ class promise<void> : public promise<> {};
 #include <sys/epoll.h>
 #include <sys/mman.h>
 #include <signal.h>
-#include <boost/optional.hpp>
+#include <optional>
 #include <pthread.h>
 #include <signal.h>
 #include <memory>
@@ -1633,9 +3395,34 @@ void throw_system_error_on(bool condition, const char* what_arg = "!") {
 }
 
 
+
+
+
+
+
+
+
 #include <arpa/inet.h>
 #include <iosfwd>
 #include <utility>
+
+namespace net {
+
+enum class ip_protocol_num : uint8_t {
+    icmp = 1, tcp = 6, udp = 17, unused = 255
+};
+
+enum class eth_protocol_num : uint16_t {
+    ipv4 = 0x0800, arp = 0x0806, ipv6 = 0x86dd
+};
+
+const uint8_t eth_hdr_len = 14;
+const uint8_t tcp_hdr_len_min = 20;
+const uint8_t ipv4_hdr_len_min = 20;
+const uint8_t ipv6_hdr_len_min = 40;
+const uint16_t ip_packet_len_max = 65535;
+
+}
 inline uint64_t ntohq(uint64_t v) {
     return __builtin_bswap64(v);
 }
@@ -1822,6 +3609,594 @@ struct ipv4_addr {
     }
     ipv4_addr(socket_address &&sa) : ipv4_addr(sa) {}
 };
+
+
+
+namespace net {
+
+struct fragment {
+    char* base;
+    size_t size;
+};
+
+struct offload_info {
+    ip_protocol_num protocol = ip_protocol_num::unused;
+    bool needs_csum = false;
+    uint8_t ip_hdr_len = 20;
+    uint8_t tcp_hdr_len = 20;
+    uint8_t udp_hdr_len = 8;
+    bool needs_ip_csum = false;
+    bool reassembled = false;
+    uint16_t tso_seg_size = 0;
+    // HW stripped VLAN header (CPU order)
+    std::optional<uint16_t> vlan_tci;
+};
+
+// Zero-copy friendly packet class
+//
+// For implementing zero-copy, we need a flexible destructor that can
+// destroy packet data in different ways: decrementing a reference count,
+// or calling a free()-like function.
+//
+// Moreover, we need different destructors for each set of fragments within
+// a single fragment. For example, a header and trailer might need delete[]
+// to be called, while the internal data needs a reference count to be
+// released.  Matters are complicated in that fragments can be split
+// (due to virtual/physical translation).
+//
+// To implement this, we associate each packet with a single destructor,
+// but allow composing a packet from another packet plus a fragment to
+// be added, with its own destructor, causing the destructors to be chained.
+//
+// The downside is that the data needed for the destructor is duplicated,
+// if it is already available in the fragment itself.
+//
+// As an optimization, when we allocate small fragments, we allocate some
+// extra space, so prepending to the packet does not require extra
+// allocations.  This is useful when adding headers.
+//
+class packet final {
+    // enough for lots of headers, not quite two cache lines:
+    static constexpr size_t internal_data_size = 128 - 16;
+    static constexpr size_t default_nr_frags = 4;
+
+    struct pseudo_vector {
+        fragment* _start;
+        fragment* _finish;
+        pseudo_vector(fragment* start, size_t nr)
+            : _start(start), _finish(_start + nr) {}
+        fragment* begin() { return _start; }
+        fragment* end() { return _finish; }
+        fragment& operator[](size_t idx) { return _start[idx]; }
+    };
+
+    struct impl {
+        // when destroyed, virtual destructor will reclaim resources
+        deleter _deleter;
+        unsigned _len = 0;
+        uint16_t _nr_frags = 0;
+        uint16_t _allocated_frags;
+        offload_info _offload_info;
+        std::optional<uint32_t> _rss_hash;
+        char _data[internal_data_size]; // only _frags[0] may use
+        unsigned _headroom = internal_data_size; // in _data
+        // FIXME: share _data/_frags space
+
+        fragment _frags[];
+
+        impl(size_t nr_frags = default_nr_frags);
+        impl(const impl&) = delete;
+        impl(fragment frag, size_t nr_frags = default_nr_frags);
+
+        pseudo_vector fragments() { return { _frags, _nr_frags }; }
+
+        static std::unique_ptr<impl> allocate(size_t nr_frags) {
+            nr_frags = std::max(nr_frags, default_nr_frags);
+            return std::unique_ptr<impl>(new (nr_frags) impl(nr_frags));
+        }
+
+        static std::unique_ptr<impl> copy(impl* old, size_t nr) {
+            auto n = allocate(nr);
+            n->_deleter = std::move(old->_deleter);
+            n->_len = old->_len;
+            n->_nr_frags = old->_nr_frags;
+            n->_headroom = old->_headroom;
+            n->_offload_info = old->_offload_info;
+            n->_rss_hash = old->_rss_hash;
+            std::copy(old->_frags, old->_frags + old->_nr_frags, n->_frags);
+            old->copy_internal_fragment_to(n.get());
+            return std::move(n);
+        }
+
+        static std::unique_ptr<impl> copy(impl* old) {
+            return copy(old, old->_nr_frags);
+        }
+
+        static std::unique_ptr<impl> allocate_if_needed(std::unique_ptr<impl> old, size_t extra_frags) {
+            if (old->_allocated_frags >= old->_nr_frags + extra_frags) {
+                return std::move(old);
+            }
+            return copy(old.get(), std::max<size_t>(old->_nr_frags + extra_frags, 2 * old->_nr_frags));
+        }
+        void* operator new(size_t size, size_t nr_frags = default_nr_frags) {
+            assert(nr_frags == uint16_t(nr_frags));
+            return ::operator new(size + nr_frags * sizeof(fragment));
+        }
+        // Matching the operator new above
+        void operator delete(void* ptr, size_t nr_frags) {
+            return ::operator delete(ptr);
+        }
+        // Since the above "placement delete" hides the global one, expose it
+        void operator delete(void* ptr) {
+            return ::operator delete(ptr);
+        }
+
+        bool using_internal_data() const {
+            return _nr_frags
+                    && _frags[0].base >= _data
+                    && _frags[0].base < _data + internal_data_size;
+        }
+
+        void unuse_internal_data() {
+            if (!using_internal_data()) {
+                return;
+            }
+            auto buf = static_cast<char*>(::malloc(_frags[0].size));
+            if (!buf) {
+                throw std::bad_alloc();
+            }
+            deleter d = make_free_deleter(buf);
+            std::copy(_frags[0].base, _frags[0].base + _frags[0].size, buf);
+            _frags[0].base = buf;
+            _deleter.append(std::move(d));
+            _headroom = internal_data_size;
+        }
+        void copy_internal_fragment_to(impl* to) {
+            if (!using_internal_data()) {
+                return;
+            }
+            to->_frags[0].base = to->_data + _headroom;
+            std::copy(_frags[0].base, _frags[0].base + _frags[0].size,
+                    to->_frags[0].base);
+        }
+    };
+    packet(std::unique_ptr<impl>&& impl) : _impl(std::move(impl)) {}
+    std::unique_ptr<impl> _impl;
+public:
+    static packet from_static_data(const char* data, size_t len) {
+        return {fragment{const_cast<char*>(data), len}, deleter()};
+    }
+
+    // build empty packet
+    packet();
+    // build empty packet with nr_frags allocated
+    packet(size_t nr_frags);
+    // move existing packet
+    packet(packet&& x) noexcept;
+    // copy data into packet
+    packet(const char* data, size_t len);
+    // copy data into packet
+    packet(fragment frag);
+    // zero-copy single fragment
+    packet(fragment frag, deleter del);
+    // zero-copy multiple fragments
+    packet(std::vector<fragment> frag, deleter del);
+    // build packet with iterator
+    template <typename Iterator>
+    packet(Iterator begin, Iterator end, deleter del);
+    // append fragment (copying new fragment)
+    packet(packet&& x, fragment frag);
+    // prepend fragment (copying new fragment, with header optimization)
+    packet(fragment frag, packet&& x);
+    // prepend fragment (zero-copy)
+    packet(fragment frag, deleter del, packet&& x);
+    // append fragment (zero-copy)
+    packet(packet&& x, fragment frag, deleter d);
+    // append temporary_buffer (zero-copy)
+    packet(packet&& x, temporary_buffer<char> buf);
+    // create from temporary_buffer (zero-copy)
+    packet(temporary_buffer<char> buf);
+    // append deleter
+    packet(packet&& x, deleter d);
+
+    packet& operator=(packet&& x) {
+        if (this != &x) {
+            this->~packet();
+            new (this) packet(std::move(x));
+        }
+        return *this;
+    }
+
+    unsigned len() const { return _impl->_len; }
+    unsigned memory() const { return len() +  sizeof(packet::impl); }
+
+    fragment frag(unsigned idx) const { return _impl->_frags[idx]; }
+    fragment& frag(unsigned idx) { return _impl->_frags[idx]; }
+
+    unsigned nr_frags() const { return _impl->_nr_frags; }
+    pseudo_vector fragments() const { return { _impl->_frags, _impl->_nr_frags }; }
+    fragment* fragment_array() const { return _impl->_frags; }
+
+    // share packet data (reference counted, non COW)
+    packet share();
+    packet share(size_t offset, size_t len);
+
+    void append(packet&& p);
+
+    void trim_front(size_t how_much);
+    void trim_back(size_t how_much);
+
+    // get a header pointer, linearizing if necessary
+    template <typename Header>
+    Header* get_header(size_t offset = 0);
+
+    // get a header pointer, linearizing if necessary
+    char* get_header(size_t offset, size_t size);
+
+    // prepend a header (default-initializing it)
+    template <typename Header>
+    Header* prepend_header(size_t extra_size = 0);
+
+    // prepend a header (uninitialized!)
+    char* prepend_uninitialized_header(size_t size);
+
+    packet free_on_cpu(unsigned cpu, std::function<void()> cb = []{});
+
+    void linearize() { return linearize(0, len()); }
+
+    void reset() { _impl.reset(); }
+
+    void reserve(int n_frags) {
+        if (n_frags > _impl->_nr_frags) {
+            auto extra = n_frags - _impl->_nr_frags;
+            _impl = impl::allocate_if_needed(std::move(_impl), extra);
+        }
+    }
+    std::optional<uint32_t> rss_hash() {
+        return _impl->_rss_hash;
+    }
+    std::optional<uint32_t> set_rss_hash(uint32_t hash) {
+        return _impl->_rss_hash = hash;
+    }
+    // Call `func` for each fragment, avoiding data copies when possible
+    // `func` is called with a temporary_buffer<char> parameter
+    template <typename Func>
+    void release_into(Func&& func) {
+        unsigned idx = 0;
+        if (_impl->using_internal_data()) {
+            auto&& f = frag(idx++);
+            func(temporary_buffer<char>(f.base, f.size));
+        }
+        while (idx < nr_frags()) {
+            auto&& f = frag(idx++);
+            func(temporary_buffer<char>(f.base, f.size, _impl->_deleter.share()));
+        }
+    }
+    std::vector<temporary_buffer<char>> release() {
+        std::vector<temporary_buffer<char>> ret;
+        ret.reserve(_impl->_nr_frags);
+        release_into([&ret] (temporary_buffer<char>&& frag) {
+            ret.push_back(std::move(frag));
+        });
+        return ret;
+    }
+    explicit operator bool() {
+        return bool(_impl);
+    }
+    static packet make_null_packet() {
+        return net::packet(nullptr);
+    }
+private:
+    void linearize(size_t at_frag, size_t desired_size);
+    bool allocate_headroom(size_t size);
+public:
+    class offload_info offload_info() const { return _impl->_offload_info; }
+    class offload_info& offload_info_ref() { return _impl->_offload_info; }
+    void set_offload_info(class offload_info oi) { _impl->_offload_info = oi; }
+};
+
+std::ostream& operator<<(std::ostream& os, const packet& p);
+
+inline
+packet::packet(packet&& x) noexcept
+    : _impl(std::move(x._impl)) {
+}
+
+inline
+packet::impl::impl(size_t nr_frags)
+    : _len(0), _allocated_frags(nr_frags) {
+}
+
+inline
+packet::impl::impl(fragment frag, size_t nr_frags)
+    : _len(frag.size), _allocated_frags(nr_frags) {
+    assert(_allocated_frags > _nr_frags);
+    if (frag.size <= internal_data_size) {
+        _headroom -= frag.size;
+        _frags[0] = { _data + _headroom, frag.size };
+    } else {
+        auto buf = static_cast<char*>(::malloc(frag.size));
+        if (!buf) {
+            throw std::bad_alloc();
+        }
+        deleter d = make_free_deleter(buf);
+        _frags[0] = { buf, frag.size };
+        _deleter.append(std::move(d));
+    }
+    std::copy(frag.base, frag.base + frag.size, _frags[0].base);
+    ++_nr_frags;
+}
+
+inline
+packet::packet()
+    : _impl(impl::allocate(1)) {
+}
+
+inline
+packet::packet(size_t nr_frags)
+    : _impl(impl::allocate(nr_frags)) {
+}
+
+inline
+packet::packet(fragment frag) : _impl(new impl(frag)) {
+}
+
+inline
+packet::packet(const char* data, size_t size) : packet(fragment{const_cast<char*>(data), size}) {
+}
+
+inline
+packet::packet(fragment frag, deleter d)
+    : _impl(impl::allocate(1)) {
+    _impl->_deleter = std::move(d);
+    _impl->_frags[_impl->_nr_frags++] = frag;
+    _impl->_len = frag.size;
+}
+
+inline
+packet::packet(std::vector<fragment> frag, deleter d)
+    : _impl(impl::allocate(frag.size())) {
+    _impl->_deleter = std::move(d);
+    std::copy(frag.begin(), frag.end(), _impl->_frags);
+    _impl->_nr_frags = frag.size();
+    _impl->_len = 0;
+    for (auto&& f : _impl->fragments()) {
+        _impl->_len += f.size;
+    }
+}
+
+template <typename Iterator>
+inline
+packet::packet(Iterator begin, Iterator end, deleter del) {
+    unsigned nr_frags = 0, len = 0;
+    nr_frags = std::distance(begin, end);
+    std::for_each(begin, end, [&] (const fragment& frag) { len += frag.size; });
+    _impl = impl::allocate(nr_frags);
+    _impl->_deleter = std::move(del);
+    _impl->_len = len;
+    _impl->_nr_frags = nr_frags;
+    std::copy(begin, end, _impl->_frags);
+}
+
+inline
+packet::packet(packet&& x, fragment frag)
+    : _impl(impl::allocate_if_needed(std::move(x._impl), 1)) {
+    _impl->_len += frag.size;
+    std::unique_ptr<char[]> buf(new char[frag.size]);
+    std::copy(frag.base, frag.base + frag.size, buf.get());
+    _impl->_frags[_impl->_nr_frags++] = {buf.get(), frag.size};
+    _impl->_deleter = make_deleter(std::move(_impl->_deleter), [buf = buf.release()] {
+        delete[] buf;
+    });
+}
+
+inline
+bool
+packet::allocate_headroom(size_t size) {
+    if (_impl->_headroom >= size) {
+        _impl->_len += size;
+        if (!_impl->using_internal_data()) {
+            _impl = impl::allocate_if_needed(std::move(_impl), 1);
+            std::copy_backward(_impl->_frags, _impl->_frags + _impl->_nr_frags,
+                    _impl->_frags + _impl->_nr_frags + 1);
+            _impl->_frags[0] = { _impl->_data + internal_data_size, 0 };
+            ++_impl->_nr_frags;
+        }
+        _impl->_headroom -= size;
+        _impl->_frags[0].base -= size;
+        _impl->_frags[0].size += size;
+        return true;
+    } else {
+        return false;
+    }
+}
+
+
+inline
+packet::packet(fragment frag, packet&& x)
+    : _impl(std::move(x._impl)) {
+    // try to prepend into existing internal fragment
+    if (allocate_headroom(frag.size)) {
+        std::copy(frag.base, frag.base + frag.size, _impl->_frags[0].base);
+        return;
+    } else {
+        // didn't work out, allocate and copy
+        _impl->unuse_internal_data();
+        _impl = impl::allocate_if_needed(std::move(_impl), 1);
+        _impl->_len += frag.size;
+        std::unique_ptr<char[]> buf(new char[frag.size]);
+        std::copy(frag.base, frag.base + frag.size, buf.get());
+        std::copy_backward(_impl->_frags, _impl->_frags + _impl->_nr_frags,
+                _impl->_frags + _impl->_nr_frags + 1);
+        ++_impl->_nr_frags;
+        _impl->_frags[0] = {buf.get(), frag.size};
+        _impl->_deleter = make_deleter(std::move(_impl->_deleter),
+                [buf = std::move(buf)] {});
+    }
+}
+
+inline
+packet::packet(packet&& x, fragment frag, deleter d)
+    : _impl(impl::allocate_if_needed(std::move(x._impl), 1)) {
+    _impl->_len += frag.size;
+    _impl->_frags[_impl->_nr_frags++] = frag;
+    d.append(std::move(_impl->_deleter));
+    _impl->_deleter = std::move(d);
+}
+
+inline
+packet::packet(packet&& x, deleter d)
+    : _impl(std::move(x._impl)) {
+    _impl->_deleter.append(std::move(d));
+}
+
+inline
+packet::packet(packet&& x, temporary_buffer<char> buf)
+    : packet(std::move(x), fragment{buf.get_write(), buf.size()}, buf.release()) {
+}
+
+inline
+packet::packet(temporary_buffer<char> buf)
+    : packet(fragment{buf.get_write(), buf.size()}, buf.release()) {}
+
+inline
+void packet::append(packet&& p) {
+    if (!_impl->_len) {
+        *this = std::move(p);
+        return;
+    }
+    _impl = impl::allocate_if_needed(std::move(_impl), p._impl->_nr_frags);
+    _impl->_len += p._impl->_len;
+    p._impl->unuse_internal_data();
+    std::copy(p._impl->_frags, p._impl->_frags + p._impl->_nr_frags,
+            _impl->_frags + _impl->_nr_frags);
+    _impl->_nr_frags += p._impl->_nr_frags;
+    p._impl->_deleter.append(std::move(_impl->_deleter));
+    _impl->_deleter = std::move(p._impl->_deleter);
+}
+
+inline
+char* packet::get_header(size_t offset, size_t size) {
+    if (offset + size > _impl->_len) {
+        return nullptr;
+    }
+    size_t i = 0;
+    while (i != _impl->_nr_frags && offset >= _impl->_frags[i].size) {
+        offset -= _impl->_frags[i++].size;
+    }
+    if (i == _impl->_nr_frags) {
+        return nullptr;
+    }
+    if (offset + size > _impl->_frags[i].size) {
+        linearize(i, offset + size);
+    }
+    return _impl->_frags[i].base + offset;
+}
+
+template <typename Header>
+inline
+Header* packet::get_header(size_t offset) {
+    return reinterpret_cast<Header*>(get_header(offset, sizeof(Header)));
+}
+
+inline
+void packet::trim_front(size_t how_much) {
+    assert(how_much <= _impl->_len);
+    _impl->_len -= how_much;
+    size_t i = 0;
+    while (how_much && how_much >= _impl->_frags[i].size) {
+        how_much -= _impl->_frags[i++].size;
+    }
+    std::copy(_impl->_frags + i, _impl->_frags + _impl->_nr_frags, _impl->_frags);
+    _impl->_nr_frags -= i;
+    if (!_impl->using_internal_data()) {
+        _impl->_headroom = internal_data_size;
+    }
+    if (how_much) {
+        if (_impl->using_internal_data()) {
+            _impl->_headroom += how_much;
+        }
+        _impl->_frags[0].base += how_much;
+        _impl->_frags[0].size -= how_much;
+    }
+}
+
+inline
+void packet::trim_back(size_t how_much) {
+    assert(how_much <= _impl->_len);
+    _impl->_len -= how_much;
+    size_t i = _impl->_nr_frags - 1;
+    while (how_much && how_much >= _impl->_frags[i].size) {
+        how_much -= _impl->_frags[i--].size;
+    }
+    _impl->_nr_frags = i + 1;
+    if (how_much) {
+        _impl->_frags[i].size -= how_much;
+        if (i == 0 && _impl->using_internal_data()) {
+            _impl->_headroom += how_much;
+        }
+    }
+}
+
+template <typename Header>
+Header*
+packet::prepend_header(size_t extra_size) {
+    auto h = prepend_uninitialized_header(sizeof(Header) + extra_size);
+    return new (h) Header{};
+}
+
+// prepend a header (uninitialized!)
+inline
+char* packet::prepend_uninitialized_header(size_t size) {
+    if (!allocate_headroom(size)) {
+        // didn't work out, allocate and copy
+        _impl->unuse_internal_data();
+        // try again, after unuse_internal_data we may have space after all
+        if (!allocate_headroom(size)) {
+            // failed
+            _impl->_len += size;
+            _impl = impl::allocate_if_needed(std::move(_impl), 1);
+            std::unique_ptr<char[]> buf(new char[size]);
+            std::copy_backward(_impl->_frags, _impl->_frags + _impl->_nr_frags,
+                    _impl->_frags + _impl->_nr_frags + 1);
+            ++_impl->_nr_frags;
+            _impl->_frags[0] = {buf.get(), size};
+            _impl->_deleter = make_deleter(std::move(_impl->_deleter),
+                    [buf = std::move(buf)] {});
+        }
+    }
+    return _impl->_frags[0].base;
+}
+
+inline
+packet packet::share() {
+    return share(0, _impl->_len);
+}
+
+inline
+packet packet::share(size_t offset, size_t len) {
+    _impl->unuse_internal_data(); // FIXME: eliminate?
+    packet n;
+    n._impl = impl::allocate_if_needed(std::move(n._impl), _impl->_nr_frags);
+    size_t idx = 0;
+    while (offset > 0 && offset >= _impl->_frags[idx].size) {
+        offset -= _impl->_frags[idx++].size;
+    }
+    while (n._impl->_len < len) {
+        auto& f = _impl->_frags[idx++];
+        auto fsize = std::min(len - n._impl->_len, f.size - offset);
+        n._impl->_frags[n._impl->_nr_frags++] = { f.base + offset, fsize };
+        n._impl->_len += fsize;
+        offset = 0;
+    }
+    n._impl->_offload_info = _impl->_offload_info;
+    assert(!n._impl->_deleter);
+    n._impl->_deleter = _impl->_deleter.share();
+    return n;
+}
+
+}
+
 
 
 class file_desc {
@@ -2562,800 +4937,6 @@ public:
     }
 };
 
-
-
-/*----------------------------metrics---------------------------------------*/
-
-// namespace metrics {
-// struct histogram_bucket {
-//     uint64_t count = 0; // number of events.
-//     double upper_bound = 0;      // Inclusive.
-// };
-
-// struct histogram {
-//     uint64_t sample_count = 0;
-//     double sample_sum = 0;
-//     std::vector<histogram_bucket> buckets; // Ordered in increasing order of upper_bound, +Inf bucket is optional.
-//     histogram& operator+=(const histogram& h);
-//     histogram operator+(const histogram& h) const;
-//     histogram operator+(histogram&& h) const;
-// };
-// }
-// #include <boost/variant.hpp>
-
-// namespace metrics {
-// namespace impl {
-// class metric_groups_def;
-// struct metric_definition_impl;
-// class metric_groups_impl;
-// }
-
-// using group_name_type = std::string; 
-// class metric_groups;
-
-// class metric_definition {
-//     std::unique_ptr<impl::metric_definition_impl> _impl;
-// public:
-//     metric_definition(const impl::metric_definition_impl& impl) noexcept;
-//     metric_definition(metric_definition&& m) noexcept;
-//     ~metric_definition();
-//     friend metric_groups;
-//     friend impl::metric_groups_impl;
-// };
-// class metric_group_definition {
-// public:
-//     group_name_type name;
-//     std::initializer_list<metric_definition> metrics;
-//     metric_group_definition(const group_name_type& name, std::initializer_list<metric_definition> l);
-//     metric_group_definition(const metric_group_definition&) = delete;
-//     ~metric_group_definition();
-// };
-
-// class metric_groups {
-//     std::unique_ptr<impl::metric_groups_def> _impl;
-// public:
-//     metric_groups() noexcept;
-//     metric_groups(metric_groups&&) = default;
-//     virtual ~metric_groups();
-//     metric_groups& operator=(metric_groups&&) = default;
-//     metric_groups(std::initializer_list<metric_group_definition> mg);
-//     metric_groups& add_group(const group_name_type& name, const std::initializer_list<metric_definition>& l);
-//     void clear();
-// };
-
-
-// class metric_group : public metric_groups {
-// public:
-//     metric_group() noexcept;
-//     metric_group(const metric_group&) = delete;
-//     metric_group(metric_group&&) = default;
-//     virtual ~metric_group();
-//     metric_group& operator=(metric_group&&) = default;
-//     /*!
-//      * \brief add metrics belong to the same group in the constructor.
-//      *
-//      *
-//      */
-//     metric_group(const group_name_type& name, std::initializer_list<metric_definition> l);
-// };
-// }
-
-// namespace metrics {
-
-// using metric_type_def = std::string;
-// using metric_name_type = std::string; 
-// using instance_id_type = std::string; 
-
-
-// class description {
-// public:
-//     description(std::string s) : _s(std::move(s))
-//     {}
-//     const std::string& str() const {
-//         return _s;
-//     }
-// private:
-//     std::string _s;
-// };//这个地方有问题
-
-// class label_instance {
-//     std::string _key;
-//     std::string _value;
-// public:
-//     template<typename T>
-//     label_instance(const std::string& key, T v) : _key(key), _value(boost::lexical_cast<std::string>(v)){}
-
-//     const std::string key() const {
-//         return _key;
-//     }
-//     const std::string value() const {
-//         return _value;
-//     }
-//     bool operator<(const label_instance&) const;
-//     bool operator==(const label_instance&) const;
-//     bool operator!=(const label_instance&) const;
-// };
-
-// class label {
-//     std::string key;
-// public:
-//     using instance = label_instance;
-//     explicit label(const std::string& key) : key(key) {
-//     }
-//     template<typename T>
-//     instance operator()(T value) const {
-//         return label_instance(key, std::forward<T>(value));
-//     }
-//     const std::string& name() const {
-//         return key;
-//     }
-// };
-
-// namespace impl {
-// // The value binding data types
-// enum class data_type : uint8_t {
-//     COUNTER, // unsigned int 64
-//     GAUGE, // double
-//     DERIVE, // signed int 64
-//     ABSOLUTE, // unsigned int 64
-//     HISTOGRAM,
-// };
-// /*!
-//  * \breif A helper class that used to return metrics value.
-//  * Do not use directly @see metrics_creation
-//  */
-// struct metric_value {
-//     boost::variant<double, histogram> u;
-//     data_type _type;
-//     data_type type() const {
-//         return _type;
-//     }
-//     double d() const {
-//         return boost::get<double>(u);
-//     }
-//     uint64_t ui() const {
-//         return boost::get<double>(u);
-//     }
-
-//     int64_t i() const {
-//         return boost::get<double>(u);
-//     }
-
-//     metric_value()
-//             : _type(data_type::GAUGE) {
-//     }
-
-//     metric_value(histogram&& h, data_type t = data_type::HISTOGRAM) :
-//         u(std::move(h)), _type(t) {
-//     }
-//     metric_value(const histogram& h, data_type t = data_type::HISTOGRAM) :
-//         u(h), _type(t) {
-//     }
-
-//     metric_value(double d, data_type t)
-//             : u(d), _type(t) {
-//     }
-
-//     metric_value& operator=(const metric_value& c) = default;
-
-//     metric_value& operator+=(const metric_value& c) {
-//         *this = *this + c;
-//         return *this;
-//     }
-
-//     metric_value operator+(const metric_value& c);
-//     const histogram& get_histogram() const {
-//         return boost::get<histogram>(u);
-//     }
-// };
-
-// using metric_function = std::function<metric_value()>;
-
-// struct metric_type {
-//     data_type base_type;
-//     metric_type_def type_name;
-// };
-
-// struct metric_definition_impl {
-//     metric_name_type name;
-//     metric_type type;
-//     metric_function f;
-//     description d;
-//     bool enabled = true;
-//     std::map<std::string, std::string> labels;
-//     metric_definition_impl& operator ()(bool enabled);
-//     metric_definition_impl& operator ()(const label_instance& label);
-//     metric_definition_impl(
-//         metric_name_type name,
-//         metric_type type,
-//         metric_function f,
-//         description d,
-//         std::vector<label_instance> labels);
-// };
-
-// class metric_groups_def {
-// public:
-//     metric_groups_def() = default;
-//     virtual ~metric_groups_def() = default;
-//     metric_groups_def(const metric_groups_def&) = delete;
-//     metric_groups_def(metric_groups_def&&) = default;
-//     virtual metric_groups_def& add_metric(group_name_type name, const metric_definition& md) = 0;
-//     virtual metric_groups_def& add_group(group_name_type name, const std::initializer_list<metric_definition>& l) = 0;
-//     virtual metric_groups_def& add_group(group_name_type name, const std::vector<metric_definition>& l) = 0;
-// };
-
-// instance_id_type shard();
-
-// template<typename T, typename En = std::true_type>
-// struct is_callable;
-
-// template<typename T>
-// struct is_callable<T, typename std::integral_constant<bool, !std::is_void<typename std::result_of<T()>::type>::value>::type> : public std::true_type {
-// };
-
-// template<typename T>
-// struct is_callable<T, typename std::enable_if<std::is_fundamental<T>::value, std::true_type>::type> : public std::false_type {
-// };
-
-// template<typename T, typename = std::enable_if_t<is_callable<T>::value>>
-// metric_function make_function(T val, data_type dt) {
-//     return [dt, val] {
-//         return metric_value(val(), dt);
-//     };
-// }
-
-// template<typename T, typename = std::enable_if_t<!is_callable<T>::value>>
-// metric_function make_function(T& val, data_type dt) {
-//     return [dt, &val] {
-//         return metric_value(val, dt);
-//     };
-// }
-// }
-
-// extern const bool metric_disabled;
-
-// extern label shard_label;
-// extern label type_label;
-
-// template<typename T>
-// impl::metric_definition_impl make_gauge(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {}) {
-//     return {name, {impl::data_type::GAUGE, "gauge"}, make_function(std::forward<T>(val), impl::data_type::GAUGE), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_gauge(metric_name_type name,
-//         description d, T&& val) {
-//     return {name, {impl::data_type::GAUGE, "gauge"}, make_function(std::forward<T>(val), impl::data_type::GAUGE), d, {}};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_gauge(metric_name_type name,
-//         description d, std::vector<label_instance> labels, T&& val) {
-//     return {name, {impl::data_type::GAUGE, "gauge"}, make_function(std::forward<T>(val), impl::data_type::GAUGE), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_derive(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {}) {
-//     return {name, {impl::data_type::DERIVE, "derive"}, make_function(std::forward<T>(val), impl::data_type::DERIVE), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_derive(metric_name_type name, description d,
-//         T&& val) {
-//     return {name, {impl::data_type::DERIVE, "derive"}, make_function(std::forward<T>(val), impl::data_type::DERIVE), d, {}};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_derive(metric_name_type name, description d, std::vector<label_instance> labels,
-//         T&& val) {
-//     return {name, {impl::data_type::DERIVE, "derive"}, make_function(std::forward<T>(val), impl::data_type::DERIVE), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_counter(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {}) {
-//     return {name, {impl::data_type::COUNTER, "counter"}, make_function(std::forward<T>(val), impl::data_type::COUNTER), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_absolute(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {}) {
-//     return {name, {impl::data_type::ABSOLUTE, "absolute"}, make_function(std::forward<T>(val), impl::data_type::ABSOLUTE), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_histogram(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {}) {
-//     return  {name, {impl::data_type::HISTOGRAM, "histogram"}, make_function(std::forward<T>(val), impl::data_type::HISTOGRAM), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_histogram(metric_name_type name,
-//         description d, std::vector<label_instance> labels, T&& val) {
-//     return  {name, {impl::data_type::HISTOGRAM, "histogram"}, make_function(std::forward<T>(val), impl::data_type::HISTOGRAM), d, labels};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_histogram(metric_name_type name,
-//         description d, T&& val) {
-//     return  {name, {impl::data_type::HISTOGRAM, "histogram"}, make_function(std::forward<T>(val), impl::data_type::HISTOGRAM), d, {}};
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_total_bytes(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {},
-//         instance_id_type instance = impl::shard()) {
-//     return make_derive(name, std::forward<T>(val), d, labels)(type_label("total_bytes"));
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_current_bytes(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {},
-//         instance_id_type instance = impl::shard()) {
-//     return make_derive(name, std::forward<T>(val), d, labels)(type_label("bytes"));
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_queue_length(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {},
-//         instance_id_type instance = impl::shard()) {
-//     return make_gauge(name, std::forward<T>(val), d, labels)(type_label("queue_length"));
-// }
-
-// template<typename T>
-// impl::metric_definition_impl make_total_operations(metric_name_type name,
-//         T&& val, description d=description(), std::vector<label_instance> labels = {},
-//         instance_id_type instance = impl::shard()) {
-//     return make_derive(name, std::forward<T>(val), d, labels)(type_label("total_operations"));
-// }
-// }
-
-// namespace metrics {
-// namespace impl {
-//     using labels_type = std::map<std::string, std::string>;
-// }
-// }
-
-// namespace std {
-
-// template<>
-// struct hash<metrics::impl::labels_type> {
-//     using argument_type = metrics::impl::labels_type;
-//     using result_type = ::std::size_t;
-//     result_type operator()(argument_type const& s) const {
-//         result_type h = 0;
-//         for (auto&& i : s) {
-//             boost::hash_combine(h, std::hash<std::string>{}(i.second));
-//         }
-//         return h;
-//     }
-// };
-
-// }
-
-// namespace metrics {
-// namespace impl {
-
-// class metric_id {
-// public:
-//     metric_id() = default;
-//     metric_id(group_name_type group, metric_name_type name,
-//                     labels_type labels = {})
-//                     : _group(std::move(group)), _name(
-//                                     std::move(name)), _labels(labels) {
-//     }
-
-//     metric_id(metric_id &&) = default;
-//     metric_id(const metric_id &) = default;
-//     metric_id & operator=(metric_id &&) = default;
-//     metric_id & operator=(const metric_id &) = default;
-//  void unregister_metric(const metric_id & id);
-//     const group_name_type & group_name() const {
-//         return _group;
-//     }
-
-//     void group_name(const group_name_type & name) {
-//         _group = name;
-//     }
-
-//     const instance_id_type & instance_id() const {
-//         return _labels.at(shard_label.name());
-//     }
-//     const metric_name_type & name() const {
-//         return _name;
-//     }
-//     const metrics::metric_type_def & inherit_type() const {
-//         return _labels.at(type_label.name());
-//     }
-//     const labels_type& labels() const {
-//         return _labels;
-//     }
-//     std::string full_name() const;
-//     bool operator<(const metric_id&) const;
-//     bool operator==(const metric_id&) const;
-// private:
-//     auto as_tuple() const {
-//         return std::tie(group_name(), instance_id(), name(),
-//                     inherit_type(), labels());
-//     }
-//     group_name_type _group;
-//     metric_name_type _name;
-//     labels_type _labels;
-// };
-// }
-
-
-// using metrics_registration = std::vector<metric_id>;
-
-// class metric_groups_impl : public metric_groups_def {
-//     metrics_registration _registration;
-// public:
-//     metric_groups_impl() = default;
-//     ~metric_groups_impl();
-//     metric_groups_impl(const metric_groups_impl&) = delete;
-//     metric_groups_impl(metric_groups_impl&&) = default;
-//     metric_groups_impl& add_metric(group_name_type name, const metric_definition& md);
-//     metric_groups_impl& add_group(group_name_type name, const std::initializer_list<metric_definition>& l);
-//     metric_groups_impl& add_group(group_name_type name, const std::vector<metric_definition>& l);
-// };
-
-// class impl;
-// class registered_metric {
-//     data_type _type;
-//     description _d;
-//     bool _enabled;
-//     metric_function _f;
-//     shared_ptr<impl> _impl;
-//     metric_id _id;
-// public:
-//     registered_metric(metric_id id, data_type type, metric_function f, description d = description(), bool enabled=true);
-//     virtual ~registered_metric() {}
-//     virtual metric_value operator()() const {
-//         return _f();
-//     }
-//     data_type get_type() const {
-//         return _type;
-//     }
-
-//     bool is_enabled() const {
-//         return _enabled;
-//     }
-
-//     void set_enabled(bool b) {
-//         _enabled = b;
-//     }
-
-//     const description& get_description() const {
-//         return _d;
-//     }
-
-//     const metric_id& get_id() const {
-//         return _id;
-//     }
-// };
-
-// /*!
-//  * \brief holds information that relevant to all metric instances
-//  */
-// struct metric_info {
-//     data_type type;
-// };
-
-// using register_ref = shared_ptr<registered_metric>;
-// using metric_instances = std::unordered_map<labels_type, register_ref>;
-
-// class metric_family {
-//     metric_instances _instances;
-//     metric_info _info;
-// public:
-//     using iterator = metric_instances::iterator;
-//     using const_iterator = metric_instances::const_iterator;
-
-//     metric_family() = default;
-//     metric_family(const metric_family&) = default;
-//     metric_family(const metric_instances& instances) : _instances(instances) {
-//     }
-//     metric_family(const metric_instances& instances, const metric_info& info) : _instances(instances), _info(info) {
-//     }
-//     metric_family(metric_instances&& instances, metric_info&& info) : _instances(std::move(instances)), _info(std::move(info)) {
-//     }
-//     metric_family(metric_instances&& instances) : _instances(std::move(instances)) {
-//     }
-
-//     register_ref& operator[](const labels_type& l) {
-//         return _instances[l];
-//     }
-
-//     const register_ref& at(const labels_type& l) const {
-//         return _instances.at(l);
-//     }
-
-//     metric_info& info() {
-//         return _info;
-//     }
-
-//     const metric_info& info() const {
-//         return _info;
-//     }
-
-//     iterator find(const labels_type& l) {
-//         return _instances.find(l);
-//     }
-
-//     const_iterator find(const labels_type& l) const {
-//         return _instances.find(l);
-//     }
-
-//     iterator begin() {
-//         return _instances.begin();
-//     }
-
-//     const_iterator begin() const {
-//         return _instances.cbegin();
-//     }
-
-//     iterator end() {
-//         return _instances.end();
-//     }
-
-//     bool empty() const {
-//         return _instances.empty();
-//     }
-
-//     iterator erase(const_iterator position) {
-//         return _instances.erase(position);
-//     }
-
-//     const_iterator end() const {
-//         return _instances.cend();
-//     }
-// };
-
-// using value_map = std::unordered_map<std::string, metric_family>;
-// using value_holder = std::tuple<register_ref, metric_value>;
-// using value_vector = std::vector<value_holder>;
-// using values_copy = std::unordered_map<std::string, value_vector>;
-
-// struct config {
-//     std::string hostname;
-// };
-// class impl {
-//     value_map _value_map;
-//     config _config;
-// public:
-//     value_map& get_value_map() {
-//         return _value_map;
-//     }
-//     const value_map& get_value_map() const {
-//         return _value_map;
-//     }
-//     void add_registration(const metric_id& id, shared_ptr<registered_metric> rm);
-//     future<> stop() {
-//         return make_ready_future<>();
-//     }
-//     const config& get_config() const {
-//         return _config;
-//     }
-//     void set_config(const config& c) {
-//         _config = c;
-//     }
-// };
-// const value_map& get_value_map();
-// values_copy get_values();
-// shared_ptr<impl> get_local_impl();
-// void unregister_metric(const metric_id & id);
-
-// std::unique_ptr<metric_groups_def> create_metric_groups();
-
-// }
-
-// future<> configure(const boost::program_options::variables_map & opts);
-
-// /*!
-//  * \brief get the metrics configuration desciprtion
-//  */
-
-// boost::program_options::options_description get_options_description();
-
-// }
-
-
-// namespace std {
-
-// template<>
-// struct hash<metrics::impl::metric_id>{
-//     typedef metrics::impl::metric_id argument_type;
-//     typedef ::std::size_t result_type;
-//     result_type operator()(argument_type const& s) const
-//     {
-//         result_type const h1 ( std::hash<std::string>{}(s.group_name()) );
-//         result_type const h2 ( std::hash<std::string>{}(s.instance_id()) );
-//         return h1 ^ (h2 << 1); // or use boost::hash_combine
-//     }
-// };
-
-// }
-
-// namespace metrics {
-// namespace impl {
-// using metrics_registration = std::vector<metric_id>;
-
-// class metric_groups_impl : public metric_groups_def {
-//     metrics_registration _registration;
-// public:
-//     metric_groups_impl() = default;
-//     ~metric_groups_impl();
-//     metric_groups_impl(const metric_groups_impl&) = delete;
-//     metric_groups_impl(metric_groups_impl&&) = default;
-//     metric_groups_impl& add_metric(group_name_type name, const metric_definition& md);
-//     metric_groups_impl& add_group(group_name_type name, const std::initializer_list<metric_definition>& l);
-//     metric_groups_impl& add_group(group_name_type name, const std::vector<metric_definition>& l);
-// };
-
-// class impl;
-// class registered_metric {
-//     data_type _type;
-//     description _d;
-//     bool _enabled;
-//     metric_function _f;
-//     shared_ptr<impl> _impl;
-//     metric_id _id;
-// public:
-//     registered_metric(metric_id id, data_type type, metric_function f, description d = description(), bool enabled=true);
-//     virtual ~registered_metric() {}
-//     virtual metric_value operator()() const {
-//         return _f();
-//     }
-//     data_type get_type() const {
-//         return _type;
-//     }
-
-//     bool is_enabled() const {
-//         return _enabled;
-//     }
-
-//     void set_enabled(bool b) {
-//         _enabled = b;
-//     }
-
-//     const description& get_description() const {
-//         return _d;
-//     }
-
-//     const metric_id& get_id() const {
-//         return _id;
-//     }
-// };
-
-// /*!
-//  * \brief holds information that relevant to all metric instances
-//  */
-// struct metric_info {
-//     data_type type;
-// };
-
-// using register_ref = shared_ptr<registered_metric>;
-// using metric_instances = std::unordered_map<labels_type, register_ref>;
-
-// class metric_family {
-//     metric_instances _instances;
-//     metric_info _info;
-// public:
-//     using iterator = metric_instances::iterator;
-//     using const_iterator = metric_instances::const_iterator;
-
-//     metric_family() = default;
-//     metric_family(const metric_family&) = default;
-//     metric_family(const metric_instances& instances) : _instances(instances) {
-//     }
-//     metric_family(const metric_instances& instances, const metric_info& info) : _instances(instances), _info(info) {
-//     }
-//     metric_family(metric_instances&& instances, metric_info&& info) : _instances(std::move(instances)), _info(std::move(info)) {
-//     }
-//     metric_family(metric_instances&& instances) : _instances(std::move(instances)) {
-//     }
-
-//     register_ref& operator[](const labels_type& l) {
-//         return _instances[l];
-//     }
-
-//     const register_ref& at(const labels_type& l) const {
-//         return _instances.at(l);
-//     }
-
-//     metric_info& info() {
-//         return _info;
-//     }
-
-//     const metric_info& info() const {
-//         return _info;
-//     }
-
-//     iterator find(const labels_type& l) {
-//         return _instances.find(l);
-//     }
-
-//     const_iterator find(const labels_type& l) const {
-//         return _instances.find(l);
-//     }
-
-//     iterator begin() {
-//         return _instances.begin();
-//     }
-
-//     const_iterator begin() const {
-//         return _instances.cbegin();
-//     }
-
-//     iterator end() {
-//         return _instances.end();
-//     }
-
-//     bool empty() const {
-//         return _instances.empty();
-//     }
-
-//     iterator erase(const_iterator position) {
-//         return _instances.erase(position);
-//     }
-
-//     const_iterator end() const {
-//         return _instances.cend();
-//     }
-// };
-
-// using value_map = std::unordered_map<std::string, metric_family>;
-// using value_holder = std::tuple<register_ref, metric_value>;
-// using value_vector = std::vector<value_holder>;
-// using values_copy = std::unordered_map<std::string, value_vector>;
-
-// struct config {
-//     std::string hostname;
-// };
-// class impl {
-//     value_map _value_map;
-//     config _config;
-// public:
-//     value_map& get_value_map() {
-//         return _value_map;
-//     }
-//     const value_map& get_value_map() const {
-//         return _value_map;
-//     }
-//     void add_registration(const metric_id& id, shared_ptr<registered_metric> rm);
-//     future<> stop() {
-//         return make_ready_future<>();
-//     }
-//     const config& get_config() const {
-//         return _config;
-//     }
-//     void set_config(const config& c) {
-//         _config = c;
-//     }
-// };
-// const value_map& get_value_map();
-// values_copy get_values();
-// shared_ptr<impl> get_local_impl();
-// void unregister_metric(const metric_id & id);
-
-// std::unique_ptr<metric_groups_def> create_metric_groups();
-
-// }
-
-// future<> configure(const boost::program_options::variables_map & opts);
-
-// /*!
-//  * \brief get the metrics configuration desciprtion
-//  */
-
-// boost::program_options::options_description get_options_description();
-
-// }
-
-
-
 class priority_class {
     struct request {
         promise<> pr;
@@ -3610,6 +5191,283 @@ io_queue::priority_class_data& io_queue::find_or_create_class(const io_priority_
 }
 /*---------------------------------------------------socket相关----------------------------------------------------------------*/
 
+
+
+namespace net { class packet; }
+
+class data_source_impl {
+public:
+    virtual ~data_source_impl() {}
+    virtual future<temporary_buffer<char>> get() = 0;
+    virtual future<temporary_buffer<char>> skip(uint64_t n);
+    virtual future<> close() { return make_ready_future<>(); }
+};
+
+class data_source {
+    std::unique_ptr<data_source_impl> _dsi;
+protected:
+    data_source_impl* impl() const { return _dsi.get(); }
+public:
+    data_source() = default;
+    explicit data_source(std::unique_ptr<data_source_impl> dsi) : _dsi(std::move(dsi)) {}
+    data_source(data_source&& x) = default;
+    data_source& operator=(data_source&& x) = default;
+    future<temporary_buffer<char>> get() { return _dsi->get(); }
+    future<temporary_buffer<char>> skip(uint64_t n) { return _dsi->skip(n); }
+    future<> close() { return _dsi->close(); }
+};
+
+class data_sink_impl {
+public:
+    virtual ~data_sink_impl() {}
+    virtual temporary_buffer<char> allocate_buffer(size_t size) {
+        return temporary_buffer<char>(size);
+    }
+    virtual future<> put(net::packet data) = 0;
+    virtual future<> put(std::vector<temporary_buffer<char>> data) {
+        net::packet p;
+        p.reserve(data.size());
+        for (auto& buf : data) {
+            p = net::packet(std::move(p), net::fragment{buf.get_write(), buf.size()}, buf.release());
+        }
+        return put(std::move(p));
+    }
+    virtual future<> put(temporary_buffer<char> buf) {
+        return put(net::packet(net::fragment{buf.get_write(), buf.size()}, buf.release()));
+    }
+    virtual future<> flush() {
+        return make_ready_future<>();
+    }
+    virtual future<> close() = 0;
+};
+
+class data_sink {
+    std::unique_ptr<data_sink_impl> _dsi;
+public:
+    data_sink() = default;
+    explicit data_sink(std::unique_ptr<data_sink_impl> dsi) : _dsi(std::move(dsi)) {}
+    data_sink(data_sink&& x) = default;
+    data_sink& operator=(data_sink&& x) = default;
+    temporary_buffer<char> allocate_buffer(size_t size) {
+        return _dsi->allocate_buffer(size);
+    }
+    future<> put(std::vector<temporary_buffer<char>> data) {
+        return _dsi->put(std::move(data));
+    }
+    future<> put(temporary_buffer<char> data) {
+        return _dsi->put(std::move(data));
+    }
+    future<> put(net::packet p) {
+        return _dsi->put(std::move(p));
+    }
+    future<> flush() {
+        return _dsi->flush();
+    }
+    future<> close() { return _dsi->close(); }
+};
+
+
+
+
+template <typename CharType>
+class scattered_message {
+private:
+    using fragment = net::fragment;
+    using packet = net::packet;
+    using char_type = CharType;
+    packet _p;
+public:
+    scattered_message() {}
+    scattered_message(scattered_message&&) = default;
+    scattered_message(const scattered_message&) = delete;
+
+    void append_static(const char_type* buf, size_t size) {
+        if (size) {
+            _p = packet(std::move(_p), fragment{(char_type*)buf, size}, deleter());
+        }
+    }
+
+    template <size_t N>
+    void append_static(const char_type(&s)[N]) {
+        append_static(s, N - 1);
+    }
+
+    void append_static(const char_type* s) {
+        append_static(s, strlen(s));
+    }
+
+    template <typename size_type, size_type max_size>
+    void append_static(const basic_sstring<char_type, size_type, max_size>& s) {
+        append_static(s.begin(), s.size());
+    }
+
+    void append_static(const std::string_view& s) {
+        append_static(s.data(), s.size());
+    }
+
+    template <typename size_type, size_type max_size>
+    void append(basic_sstring<char_type, size_type, max_size> s) {
+        if (s.size()) {
+            _p = packet(std::move(_p), std::move(s).release());
+        }
+    }
+
+    template <typename size_type, size_type max_size, typename Callback>
+    void append(const basic_sstring<char_type, size_type, max_size>& s, Callback callback) {
+        if (s.size()) {
+            _p = packet(std::move(_p), fragment{s.begin(), s.size()}, make_deleter(std::move(callback)));
+        }
+    }
+
+    void reserve(int n_frags) {
+        _p.reserve(n_frags);
+    }
+
+    packet release() && {
+        return std::move(_p);
+    }
+
+    template <typename Callback>
+    void on_delete(Callback callback) {
+        _p = packet(std::move(_p), make_deleter(std::move(callback)));
+    }
+
+    operator bool() const {
+        return _p.len();
+    }
+
+    size_t size() {
+        return _p.len();
+    }
+};
+
+
+
+
+
+
+
+template <typename CharType>
+class input_stream final {
+    static_assert(sizeof(CharType) == 1, "must buffer stream of bytes");
+    data_source _fd;
+    temporary_buffer<CharType> _buf;
+    bool _eof = false;
+private:
+    using tmp_buf = temporary_buffer<CharType>;
+    size_t available() const { return _buf.size(); }
+protected:
+    void reset() { _buf = {}; }
+    data_source* fd() { return &_fd; }
+public:
+    // Consumer concept, for consume() method:
+    using unconsumed_remainder = std::optional<tmp_buf>;
+    struct ConsumerConcept {
+        // The consumer should operate on the data given to it, and
+        // return a future "unconsumed remainder", which can be undefined
+        // if the consumer consumed all the input given to it and is ready
+        // for more, or defined when the consumer is done (and in that case
+        // the value is the unconsumed part of the last data buffer - this
+        // can also happen to be empty).
+        future<unconsumed_remainder> operator()(tmp_buf data);
+    };
+    using char_type = CharType;
+    input_stream() = default;
+    explicit input_stream(data_source fd) : _fd(std::move(fd)), _buf(0) {}
+    input_stream(input_stream&&) = default;
+    input_stream& operator=(input_stream&&) = default;
+    future<temporary_buffer<CharType>> read_exactly(size_t n);
+    template <typename Consumer>
+    future<> consume(Consumer& c);
+    bool eof() { return _eof; }
+    /// Returns some data from the stream, or an empty buffer on end of
+    /// stream.
+    future<tmp_buf> read();
+    /// Returns up to n bytes from the stream, or an empty buffer on end of
+    /// stream.
+    future<tmp_buf> read_up_to(size_t n);
+    /// Detaches the \c input_stream from the underlying data source.
+    ///
+    /// Waits for any background operations (for example, read-ahead) to
+    /// complete, so that the any resources the stream is using can be
+    /// safely destroyed.  An example is a \ref file resource used by
+    /// the stream returned by make_file_input_stream().
+    ///
+    /// \return a future that becomes ready when this stream no longer
+    ///         needs the data source.
+    future<> close() {
+        return _fd.close();
+    }
+    /// Ignores n next bytes from the stream.
+    future<> skip(uint64_t n);
+private:
+    future<temporary_buffer<CharType>> read_exactly_part(size_t n, tmp_buf buf, size_t completed);
+};
+
+// Facilitates data buffering before it's handed over to data_sink.
+//
+// When trim_to_size is true it's guaranteed that data sink will not receive
+// chunks larger than the configured size, which could be the case when a
+// single write call is made with data larger than the configured size.
+//
+// The data sink will not receive empty chunks.
+//
+template <typename CharType>
+class output_stream final {
+    static_assert(sizeof(CharType) == 1, "must buffer stream of bytes");
+    data_sink _fd;
+    temporary_buffer<CharType> _buf;
+    net::packet _zc_bufs = net::packet::make_null_packet(); //zero copy buffers
+    size_t _size = 0;
+    size_t _begin = 0;
+    size_t _end = 0;
+    bool _trim_to_size = false;
+    bool _batch_flushes = false;
+    std::optional<promise<>> _in_batch;
+    bool _flush = false;
+    bool _flushing = false;
+    std::exception_ptr _ex;
+private:
+    size_t available() const { return _end - _begin; }
+    size_t possibly_available() const { return _size - _begin; }
+    future<> split_and_put(temporary_buffer<CharType> buf);
+    future<> put(temporary_buffer<CharType> buf);
+    void poll_flush();
+    future<> zero_copy_put(net::packet p);
+    future<> zero_copy_split_and_put(net::packet p);
+public:
+    using char_type = CharType;
+    output_stream() = default;
+    output_stream(data_sink fd, size_t size, bool trim_to_size = false, bool batch_flushes = false)
+        : _fd(std::move(fd)), _size(size), _trim_to_size(trim_to_size), _batch_flushes(batch_flushes) {}
+    output_stream(output_stream&&) = default;
+    output_stream& operator=(output_stream&&) = default;
+    ~output_stream() { assert(!_in_batch); }
+    future<> write(const char_type* buf, size_t n);
+    future<> write(const char_type* buf);
+
+    template <typename StringChar, typename SizeType, SizeType MaxSize>
+    future<> write(const basic_sstring<StringChar, SizeType, MaxSize>& s);
+    future<> write(const std::basic_string<char_type>& s);
+
+    future<> write(net::packet p);
+    future<> write(scattered_message<char_type> msg);
+    future<> write(temporary_buffer<char_type>);
+    future<> flush();
+    future<> close();
+private:
+    friend class reactor;
+};
+
+
+
+
+
+
+
+
+
+
 static inline
 bool is_ip_unspecified(ipv4_addr &addr) {
     return addr.ip == 0;
@@ -3656,7 +5514,7 @@ struct sctp_keepalive_params {
     unsigned count; // spp_pathmaxrt
 };
 
-using keepalive_params = boost::variant<tcp_keepalive_params, sctp_keepalive_params>;
+using keepalive_params = std::variant<tcp_keepalive_params, sctp_keepalive_params>;
 
 /// \cond internal
 class connected_socket_impl;
@@ -3727,17 +5585,18 @@ public:
     void shutdown_input();
 };
 
-
+namespace net{
 class socket {
     std::unique_ptr<::net::socket_impl> _si;
 public:
     ~socket();
     explicit socket(std::unique_ptr<::net::socket_impl> si);
     socket(socket&&) noexcept;
-    seastar::socket& operator=(seastar::socket&&) noexcept;
-    future<connected_socket> connect(socket_address sa, socket_address local = socket_address(::sockaddr_in{AF_INET, INADDR_ANY, {0}}), seastar::transport proto = seastar::transport::TCP);
+    socket& operator=(socket&&) noexcept;
+    future<connected_socket> connect(socket_address sa, socket_address local = socket_address(::sockaddr_in{AF_INET, INADDR_ANY, {0}}),transport proto = transport::TCP);
     void shutdown();
 };
+}
 
 class server_socket {
     std::unique_ptr<net::server_socket_impl> _ssi;
@@ -3757,18 +5616,16 @@ public:
     virtual ~network_stack() {}
     virtual server_socket listen(socket_address sa, listen_options opts) = 0;
     // FIXME: local parameter assumes ipv4 for now, fix when adding other AF
-    future<connected_socket> connect(socket_address sa, socket_address local = socket_address(::sockaddr_in{AF_INET, INADDR_ANY, {0}}), seastar::transport proto = seastar::transport::TCP) {
+    future<connected_socket> connect(socket_address sa, socket_address local = socket_address(::sockaddr_in{AF_INET, INADDR_ANY, {0}}), transport proto = transport::TCP) {
         return socket().connect(sa, local, proto);
     }
-    virtual seastar::socket socket() = 0;
+    virtual net::socket socket() = 0;
     virtual ::net::udp_channel make_udp_channel(ipv4_addr addr = {}) = 0;
     virtual future<> initialize() {
         return make_ready_future();
     }
     virtual bool has_per_core_namespace() = 0;
 };
-
-
 
 
 /*-------------------------------------------------reactor类定义----------------------------------------------------------------*/
@@ -3794,197 +5651,6 @@ struct pollfn {
         virtual bool try_enter_interrupt_mode() { return false; }
         virtual void exit_interrupt_mode() {}
 };
-
-
-
-
-struct reactor {
-/*---------构造函数和析构函数----------------*/
-    // reactor();
-    reactor(unsigned int id);
-    ~reactor();
-    reactor(const reactor&) = delete;
-    reactor& operator=(const reactor&) = delete;
-    unsigned _id = 0;
-    std::deque<double> _loads;
-    double _load = 0;
-/*----------定时器相关------------------------*/
-    steady_clock_type::duration _total_idle;
-    std::unique_ptr<lowres_clock> _lowres_clock;
-    lowres_clock::time_point _lowres_next_timeout;
-    timer_t _steady_clock_timer = {};
-    timer_set<timer<steady_clock_type>> _timers;
-    typename timer_set<timer<steady_clock_type>>::timer_list_t _expired_timers;
-    timer_set<timer<lowres_clock>> _lowres_timers;
-    typename timer_set<timer<lowres_clock>>::timer_list_t _expired_lowres_timers;
-    timer_set<timer<manual_clock>> _manual_timers;
-    typename timer_set<timer<manual_clock>>::timer_list_t _expired_manual_timers;
-    using steady_timer = timer<steady_clock_type>;
-    using lowres_timer = timer<lowres_clock>;
-    using manual_timer = timer<manual_clock>;
-    file_desc _task_quota_timer;
-    std::optional<pollable_fd> _aio_eventfd;
-/*---------------------------------------------*/
-    void add_timer(steady_timer* tmr);
-    bool queue_timer(steady_timer* tmr);
-    void del_timer(steady_timer* tmr);
-    void add_timer(lowres_timer* tmr);
-    bool queue_timer(lowres_timer* tmr);
-    void del_timer(lowres_timer* tmr);
-    void add_timer(manual_timer* tmr);
-    bool queue_timer(manual_timer* tmr);
-    void del_timer(manual_timer* tmr);
-    void enable_timer(steady_clock_type::time_point when);
-    bool do_expire_lowres_timers();
-    template <typename T, typename E, typename EnableFunc>
-    void complete_timers(T&, E&, EnableFunc&& enable_fn);
-    bool do_check_lowres_timers() const;
-    void expire_manual_timers();
-/*---------------信号处理相关------------------------*/
-    signals _signals;
-    bool _handle_sigint = true;
-    void block_notifier(int); 
-/*----------任务相关-------------------*/
-    bool _stopping = false;
-    bool _stopped = false;
-    int _return = 0;
-    unsigned _tasks_processed_report_threshold;
-    std::chrono::duration<double> _task_quota;
-    condition_variable _stop_requested;
-    std::atomic<bool> _sleeping alignas(64);
-    std::deque<std::unique_ptr<task>> _pending_tasks;
-    void run_tasks(std::deque<std::unique_ptr<task>>& tasks);
-    std::vector<std::function<future<> ()>> _exit_funcs;//为什么不用引用?
-    void add_task(std::unique_ptr<task>&& t) { _pending_tasks.push_back(std::move(t)); }
-    void add_urgent_task(std::unique_ptr<task>&& t) { _pending_tasks.push_front(std::move(t)); }
-    void add_high_priority_task(std::unique_ptr<task>&& t){
-            _pending_tasks.push_front(std::move(t));
-            // break .then() chains
-            g_need_preempt = true;
-    }
-    void force_poll() {
-        g_need_preempt = true;
-    }
-    void at_exit(std::function<future<> ()> func);
-    void exit(int ret);
-    void stop();
-    future<> run_exit_tasks();
-    template <typename Func>
-    future<io_event> submit_io(Func prepare_io);
-    semaphore _io_context_available;
-    static constexpr size_t max_aio = 128;
-    semaphore _cpu_started;
-    io_context_t _io_context;
-    promise<> _start_promise;
-    future<> when_started() { return _start_promise.get_future(); }
-    /*----------------全局--------------*/
-    int run();
-    /*----------配置相关----------------*/
-    static boost::program_options::options_description get_options_description();
-    void configure(boost::program_options::variables_map config);
-   /*----------------------资源分配相关-----------------------*/
-    shard_id _io_coordinator;
-    io_queue* _io_queue;
-    std::unique_ptr<io_queue> my_io_queue = {};
-    pthread_t _thread_id alignas(64) = pthread_self();
-    shard_id cpu_id() const { return _id; }
-    void wakeup() { pthread_kill(_thread_id, alarm_signal());}
-    std::chrono::nanoseconds calculate_poll_time();
-    /*-----------其他---------------*/
-    unsigned _max_task_backlog = 1000;
-    std::chrono::nanoseconds _max_poll_time = calculate_poll_time();
-    bool _strict_o_direct = true;
-    void set_strict_dma(bool value) {
-        _strict_o_direct = value;
-    }
-    /*----------------------poller相关----------------------------------------------------*/
-    std::vector<pollfn*> _pollers;
-    thread_pool _thread_pool;
-    
-    void unregister_poller(pollfn* p);
-    void register_poller(pollfn* p);
-    struct poller {
-        std::unique_ptr<pollfn> _pollfn;
-        class registration_task;
-        class deregistration_task;
-        registration_task* _registration_task;
-    public:
-        template <typename Func> // signature: bool ()
-        static poller simple(Func&& poll) {
-            return poller(make_pollfn(std::forward<Func>(poll)));
-        }
-        poller(std::unique_ptr<pollfn> fn)
-                : _pollfn(std::move(fn)) {
-            do_register();
-        }
-        ~poller();
-        poller(poller&& x);
-        poller& operator=(poller&& x);
-        void do_register();
-        friend class reactor;
-    };
-    class io_pollfn;
-    class signal_pollfn;
-    class aio_batch_submit_pollfn;
-    class batch_flush_pollfn;
-    class smp_pollfn;
-    class drain_cross_cpu_freelist_pollfn;
-    class lowres_timer_pollfn;
-    class manual_timer_pollfn;
-    class epoll_pollfn;
-    class syscall_pollfn;
-    class execution_stage_pollfn;
-    bool poll_once();
-    bool pure_poll_once();
-    /*----------------------------------IO相关--------------------------------------------*/
-    void start_aio_eventfd_loop();
-    server_socket listen(socket_address sa, listen_options opts = {});
-    future<connected_socket> connect(socket_address sa);
-    future<connected_socket> connect(socket_address, socket_address, transport proto = transport::TCP);
-    pollable_fd posix_listen(socket_address sa, listen_options opts = {});
-    bool posix_reuseport_available() const { return _reuseport; }
-    lw_shared_ptr<pollable_fd> make_pollable_fd(socket_address sa, transport proto = transport::TCP);
-    future<> posix_connect(lw_shared_ptr<pollable_fd> pfd, socket_address sa, socket_address local);
-    future<pollable_fd, socket_address> accept(pollable_fd_state& listen_fd);
-    future<size_t> read_some(pollable_fd_state& fd, void* buffer, size_t size);
-    future<size_t> read_some(pollable_fd_state& fd, const std::vector<iovec>& iov);
-    future<size_t> write_some(pollable_fd_state& fd, const void* buffer, size_t size);
-    future<> write_all(pollable_fd_state& fd, const void* buffer, size_t size);
-    future<file> open_file_dma(std::string name, open_flags flags, file_open_options options = {});
-    future<file> open_directory(std::string name);
-    future<> make_directory(std::string name);
-    future<> touch_directory(std::string name);
-    future<std::optional<directory_entry_type>> cfile_type(std::string name);
-    future<uint64_t> file_size(std::string pathname);
-    future<bool> file_exists(std::string pathname);
-    future<fs_type> file_system_at(std::string pathname);
-    future<> remove_file(std::string pathname);
-    future<> rename_file(std::string old_pathname, std::string new_pathname);
-    future<> link_file(std::string oldpath, std::string newpath);
-    // In the following three methods, prepare_io is not guaranteed to execute in the same processor
-    // in which it was generated. Therefore, care must be taken to avoid the use of objects that could
-    // be destroyed within or at exit of prepare_io.
-    template <typename Func>
-    future<io_event> submit_io(Func prepare_io);
-    template <typename Func>
-    future<io_event> submit_io_read(const io_priority_class& priority_class, size_t len, Func prepare_io);
-    template <typename Func>
-    future<io_event> submit_io_write(const io_priority_class& priority_class, size_t len, Func prepare_io);
-    /*-------------------------------------网络相关--------------------------------------------------------------------*/
-    const bool _reuseport;
-    std::unique_ptr<network_stack> _network_stack;
-    promise<std::unique_ptr<network_stack>> _network_stack_ready_promise;
-};
-
-bool
-reactor::pure_poll_once() {
-    for (auto c : _pollers) {
-        if (c->pure_poll()) {
-            return true;
-        }
-    }
-    return false;
-}
 
 class pollable_fd_state {
 public:
@@ -4043,37 +5709,980 @@ protected:
 private:
     std::unique_ptr<pollable_fd_state> _s;
 };
-
-
-class readable_eventfd {
-    pollable_fd _fd;
-public:
-    explicit readable_eventfd(size_t initial = 0) : _fd(try_create_eventfd(initial)) {}
-    readable_eventfd(readable_eventfd&&) = default;
-    writeable_eventfd write_side();
-    future<size_t> wait();
-    int get_write_fd() { return _fd.get_fd(); }
-private:
-    explicit readable_eventfd(file_desc&& fd) : _fd(std::move(fd)) {}
-    static file_desc try_create_eventfd(size_t initial);
-
-    friend class writeable_eventfd;
-};
-
+class readable_eventfd;
 class writeable_eventfd {
-    file_desc _fd;
 public:
+    file_desc _fd;
     explicit writeable_eventfd(size_t initial = 0) : _fd(try_create_eventfd(initial)) {}
     writeable_eventfd(writeable_eventfd&&) = default;
     readable_eventfd read_side();
     void signal(size_t nr);
     int get_read_fd() { return _fd.get(); }
-private:
     explicit writeable_eventfd(file_desc&& fd) : _fd(std::move(fd)) {}
     static file_desc try_create_eventfd(size_t initial);
-
-    friend class readable_eventfd;
 };
+
+class readable_eventfd {
+public:
+    pollable_fd _fd;
+    explicit readable_eventfd(size_t initial = 0) : _fd(try_create_eventfd(initial)) {}
+    readable_eventfd(readable_eventfd&&) = default;
+    writeable_eventfd write_side();
+    future<size_t> wait();
+    int get_write_fd() { return _fd.get_fd(); }
+    explicit readable_eventfd(file_desc&& fd) : _fd(std::move(fd)) {}
+    static file_desc try_create_eventfd(size_t initial);
+};
+
+
+
+class reactor_notifier {
+public:
+    virtual future<> wait() = 0;
+    virtual void signal() = 0;
+    virtual ~reactor_notifier() {}
+};
+
+#include <boost/lockfree/spsc_queue.hpp>
+
+class syscall_work_queue {
+public:
+    static constexpr size_t queue_length = 128;
+    struct work_item;
+    using lf_queue = boost::lockfree::spsc_queue<work_item*,
+                            boost::lockfree::capacity<queue_length>>;
+    lf_queue _pending;
+    lf_queue _completed;
+    writeable_eventfd _start_eventfd;
+    semaphore _queue_has_room = { queue_length };
+    struct work_item {
+        virtual ~work_item() {}
+        virtual void process() = 0;
+        virtual void complete() = 0;
+    };
+    template <typename T, typename Func>
+    struct work_item_returning :  work_item {
+        Func _func;
+        promise<T> _promise;
+        boost::optional<T> _result;
+        work_item_returning(Func&& func) : _func(std::move(func)) {}
+        virtual void process() override { _result = this->_func(); }
+        virtual void complete() override { _promise.set_value(std::move(*_result)); }
+        future<T> get_future() { return _promise.get_future(); }
+    };
+public:
+    syscall_work_queue();
+    template <typename T, typename Func>
+    future<T> submit(Func func) {
+        auto wi = std::make_unique<work_item_returning<T, Func>>(std::move(func));
+        auto fut = wi->get_future();
+        submit_item(std::move(wi));
+        return fut;
+    }
+    void work();
+    // Scans the _completed queue, that contains the requests already handled by the syscall thread,
+    // effectively opening up space for more requests to be submitted. One consequence of this is
+    // that from the reactor's point of view, a request is not considered handled until it is
+    // removed from the _completed queue.
+    //
+    // Returns the number of requests handled.
+    unsigned complete();
+    void submit_item(std::unique_ptr<syscall_work_queue::work_item> wi);
+    friend class thread_pool;
+};
+
+
+/*-----------------------------file-----------------------------------------------------------------*/
+
+/// \see file::list_directory()
+enum class directory_entry_type {
+    block_device,
+    char_device,
+    directory,
+    fifo,
+    link,
+    regular,
+    socket,
+};
+
+/// Enumeration describing the type of a particular filesystem
+enum class fs_type {
+    other,
+    xfs,
+    ext2,
+    ext3,
+    ext4,
+    btrfs,
+    hfs,
+    tmpfs,
+};
+
+/// A directory entry being listed.
+struct directory_entry {
+    /// Name of the file in a directory entry.  Will never be "." or "..".  Only the last component is included.
+    sstring name;
+    /// Type of the directory entry, if known.
+    std::optional<directory_entry_type> type;
+};
+
+/// File open options
+///
+/// Options used to configure an open file.
+///
+/// \ref file
+struct file_open_options {
+    uint64_t extent_allocation_size_hint = 1 << 20; ///< Allocate this much disk space when extending the file
+    bool sloppy_size = false; ///< Allow the file size not to track the amount of data written until a flush
+    uint64_t sloppy_size_hint = 1 << 20; ///< Hint as to what the eventual file size will be
+};
+
+
+const io_priority_class& default_priority_class();
+
+class file;
+class file_impl;
+
+namespace File {
+
+class file_handle;
+
+// A handle that can be transported across shards and used to
+// create a dup(2)-like `file` object referring to the same underlying file
+class file_handle_impl {
+public:
+    virtual ~file_handle_impl() = default;
+    virtual std::unique_ptr<file_handle_impl> clone() const = 0;
+    virtual shared_ptr<file_impl> to_file() && = 0;
+};
+
+}
+
+class file_impl {
+protected:
+    static file_impl* get_file_impl(file& f);
+public:
+    unsigned _memory_dma_alignment = 4096;
+    unsigned _disk_read_dma_alignment = 4096;
+    unsigned _disk_write_dma_alignment = 4096;
+public:
+    virtual ~file_impl() {}
+
+    virtual future<size_t> write_dma(uint64_t pos, const void* buffer, size_t len, const io_priority_class& pc) = 0;
+    virtual future<size_t> write_dma(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc) = 0;
+    virtual future<size_t> read_dma(uint64_t pos, void* buffer, size_t len, const io_priority_class& pc) = 0;
+    virtual future<size_t> read_dma(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc) = 0;
+    virtual future<> flush(void) = 0;
+    virtual future<struct stat> stat(void) = 0;
+    virtual future<> truncate(uint64_t length) = 0;
+    virtual future<> discard(uint64_t offset, uint64_t length) = 0;
+    virtual future<> allocate(uint64_t position, uint64_t length) = 0;
+    virtual future<uint64_t> size(void) = 0;
+    virtual future<> close() = 0;
+    virtual std::unique_ptr<File::file_handle_impl> dup();
+    virtual subscription<directory_entry> list_directory(std::function<future<> (directory_entry de)> next) = 0;
+    virtual future<temporary_buffer<uint8_t>> dma_read_bulk(uint64_t offset, size_t range_size, const io_priority_class& pc) = 0;
+
+    friend class reactor;
+};
+
+/// \endcond
+
+/// A data file on persistent storage.
+///
+/// File objects represent uncached, unbuffered files.  As such great care
+/// must be taken to cache data at the application layer; neither seastar
+/// nor the OS will cache these file.
+///
+/// Data is transferred using direct memory access (DMA).  This imposes
+/// restrictions on file offsets and data pointers.  The former must be aligned
+/// on a 4096 byte boundary, while a 512 byte boundary suffices for the latter.
+class file {
+    shared_ptr<file_impl> _file_impl;
+private:
+    explicit file(int fd, file_open_options options);
+public:
+    /// Default constructor constructs an uninitialized file object.
+    ///
+    /// A default constructor is useful for the common practice of declaring
+    /// a variable, and only assigning to it later. The uninitialized file
+    /// must not be used, or undefined behavior will result (currently, a null
+    /// pointer dereference).
+    ///
+    /// One can check whether a file object is in uninitialized state with
+    /// \ref operator bool(); One can reset a file back to uninitialized state
+    /// by assigning file() to it.
+    file() : _file_impl(nullptr) {}
+
+    file(shared_ptr<file_impl> impl)
+            : _file_impl(std::move(impl)) {}
+
+    /// Constructs a file object from a \ref file_handle obtained from another shard
+    explicit file(File::file_handle&& handle);
+
+    /// Checks whether the file object was initialized.
+    ///
+    /// \return false if the file object is uninitialized (default
+    /// constructed), true if the file object refers to an actual file.
+    explicit operator bool() const noexcept { return bool(_file_impl); }
+
+    /// Copies a file object.  The new and old objects refer to the
+    /// same underlying file.
+    ///
+    /// \param x file object to be copied
+    file(const file& x) = default;
+    /// Moves a file object.
+    file(file&& x) noexcept : _file_impl(std::move(x._file_impl)) {}
+    /// Assigns a file object.  After assignent, the destination and source refer
+    /// to the same underlying file.
+    ///
+    /// \param x file object to assign to `this`.
+    file& operator=(const file& x) noexcept = default;
+    /// Moves assigns a file object.
+    file& operator=(file&& x) noexcept = default;
+
+    // O_DIRECT reading requires that buffer, offset, and read length, are
+    // all aligned. Alignment of 4096 was necessary in the past, but no longer
+    // is - 512 is usually enough; But we'll need to use BLKSSZGET ioctl to
+    // be sure it is really enough on this filesystem. 4096 is always safe.
+    // In addition, if we start reading in things outside page boundaries,
+    // we will end up with various pages around, some of them with
+    // overlapping ranges. Those would be very challenging to cache.
+
+    /// Alignment requirement for file offsets (for reads)
+    uint64_t disk_read_dma_alignment() const {
+        return _file_impl->_disk_read_dma_alignment;
+    }
+
+    /// Alignment requirement for file offsets (for writes)
+    uint64_t disk_write_dma_alignment() const {
+        return _file_impl->_disk_write_dma_alignment;
+    }
+
+    /// Alignment requirement for data buffers
+    uint64_t memory_dma_alignment() const {
+        return _file_impl->_memory_dma_alignment;
+    }
+
+
+    /**
+     * Perform a single DMA read operation.
+     *
+     * @param aligned_pos offset to begin reading at (should be aligned)
+     * @param aligned_buffer output buffer (should be aligned)
+     * @param aligned_len number of bytes to read (should be aligned)
+     * @param pc the IO priority class under which to queue this operation
+     *
+     * Alignment is HW dependent but use 4KB alignment to be on the safe side as
+     * explained above.
+     *
+     * @return number of bytes actually read
+     * @throw exception in case of I/O error
+     */
+    template <typename CharType>
+    future<size_t>
+    dma_read(uint64_t aligned_pos, CharType* aligned_buffer, size_t aligned_len, const io_priority_class& pc = default_priority_class()) {
+        return _file_impl->read_dma(aligned_pos, aligned_buffer, aligned_len, pc);
+    }
+
+    /**
+     * Read the requested amount of bytes starting from the given offset.
+     *
+     * @param pos offset to begin reading from
+     * @param len number of bytes to read
+     * @param pc the IO priority class under which to queue this operation
+     *
+     * @return temporary buffer containing the requested data.
+     * @throw exception in case of I/O error
+     *
+     * This function doesn't require any alignment for both "pos" and "len"
+     *
+     * @note size of the returned buffer may be smaller than "len" if EOF is
+     *       reached of in case of I/O error.
+     */
+    template <typename CharType>
+    future<temporary_buffer<CharType>> dma_read(uint64_t pos, size_t len, const io_priority_class& pc = default_priority_class()) {
+        return dma_read_bulk<CharType>(pos, len, pc).then(
+                [len] (temporary_buffer<CharType> buf) {
+            if (len < buf.size()) {
+                buf.trim(len);
+            }
+
+            return std::move(buf);
+        });
+    }
+
+    /// Error thrown when attempting to read past end-of-file
+    /// with \ref dma_read_exactly().
+    class eof_error : public std::exception {};
+
+    /**
+     * Read the exact amount of bytes.
+     *
+     * @param pos offset in a file to begin reading from
+     * @param len number of bytes to read
+     * @param pc the IO priority class under which to queue this operation
+     *
+     * @return temporary buffer containing the read data
+     * @throw end_of_file_error if EOF is reached, file_io_error or
+     *        std::system_error in case of I/O error.
+     */
+    template <typename CharType>
+    future<temporary_buffer<CharType>>
+    dma_read_exactly(uint64_t pos, size_t len, const io_priority_class& pc = default_priority_class()) {
+        return dma_read<CharType>(pos, len, pc).then(
+                [pos, len] (auto buf) {
+            if (buf.size() < len) {
+                throw eof_error();
+            }
+
+            return std::move(buf);
+        });
+    }
+
+    /// Performs a DMA read into the specified iovec.
+    ///
+    /// \param pos offset to read from.  Must be aligned to \ref dma_alignment.
+    /// \param iov vector of address/size pairs to read into.  Addresses must be
+    ///            aligned.
+    /// \param pc the IO priority class under which to queue this operation
+    ///
+    /// \return a future representing the number of bytes actually read.  A short
+    ///         read may happen due to end-of-file or an I/O error.
+    future<size_t> dma_read(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc = default_priority_class()) {
+        return _file_impl->read_dma(pos, std::move(iov), pc);
+    }
+
+    /// Performs a DMA write from the specified buffer.
+    ///
+    /// \param pos offset to write into.  Must be aligned to \ref dma_alignment.
+    /// \param buffer aligned address of buffer to read from.  Buffer must exists
+    ///               until the future is made ready.
+    /// \param len number of bytes to write.  Must be aligned.
+    /// \param pc the IO priority class under which to queue this operation
+    ///
+    /// \return a future representing the number of bytes actually written.  A short
+    ///         write may happen due to an I/O error.
+    template <typename CharType>
+    future<size_t> dma_write(uint64_t pos, const CharType* buffer, size_t len, const io_priority_class& pc = default_priority_class()) {
+        return _file_impl->write_dma(pos, buffer, len, pc);
+    }
+
+    /// Performs a DMA write to the specified iovec.
+    ///
+    /// \param pos offset to write into.  Must be aligned to \ref dma_alignment.
+    /// \param iov vector of address/size pairs to write from.  Addresses must be
+    ///            aligned.
+    /// \param pc the IO priority class under which to queue this operation
+    ///
+    /// \return a future representing the number of bytes actually written.  A short
+    ///         write may happen due to an I/O error.
+    future<size_t> dma_write(uint64_t pos, std::vector<iovec> iov, const io_priority_class& pc = default_priority_class()) {
+        return _file_impl->write_dma(pos, std::move(iov), pc);
+    }
+
+    /// Causes any previously written data to be made stable on persistent storage.
+    ///
+    /// Prior to a flush, written data may or may not survive a power failure.  After
+    /// a flush, data is guaranteed to be on disk.
+    future<> flush() {
+        return _file_impl->flush();
+    }
+
+    /// Returns \c stat information about the file.
+    future<struct stat> stat() {
+        return _file_impl->stat();
+    }
+
+    /// Truncates the file to a specified length.
+    future<> truncate(uint64_t length) {
+        return _file_impl->truncate(length);
+    }
+
+    /// Preallocate disk blocks for a specified byte range.
+    ///
+    /// Requests the file system to allocate disk blocks to
+    /// back the specified range (\c length bytes starting at
+    /// \c position).  The range may be outside the current file
+    /// size; the blocks can then be used when appending to the
+    /// file.
+    ///
+    /// \param position beginning of the range at which to allocate
+    ///                 blocks.
+    /// \parm length length of range to allocate.
+    /// \return future that becomes ready when the operation completes.
+    future<> allocate(uint64_t position, uint64_t length) {
+        return _file_impl->allocate(position, length);
+    }
+
+    /// Discard unneeded data from the file.
+    ///
+    /// The discard operation tells the file system that a range of offsets
+    /// (which be aligned) is no longer needed and can be reused.
+    future<> discard(uint64_t offset, uint64_t length) {
+        return _file_impl->discard(offset, length);
+    }
+
+    /// Gets the file size.
+    future<uint64_t> size() const {
+        return _file_impl->size();
+    }
+
+    /// Closes the file.
+    ///
+    /// Flushes any pending operations and release any resources associated with
+    /// the file (except for stable storage).
+    ///
+    /// \note
+    /// to ensure file data reaches stable storage, you must call \ref flush()
+    /// before calling \c close().
+    future<> close() {
+        return _file_impl->close();
+    }
+
+    /// Returns a directory listing, given that this file object is a directory.
+    subscription<directory_entry> list_directory(std::function<future<> (directory_entry de)> next) {
+        return _file_impl->list_directory(std::move(next));
+    }
+
+    /**
+     * Read a data bulk containing the provided addresses range that starts at
+     * the given offset and ends at either the address aligned to
+     * dma_alignment (4KB) or at the file end.
+     *
+     * @param offset starting address of the range the read bulk should contain
+     * @param range_size size of the addresses range
+     * @param pc the IO priority class under which to queue this operation
+     *
+     * @return temporary buffer containing the read data bulk.
+     * @throw system_error exception in case of I/O error or eof_error when
+     *        "offset" is beyond EOF.
+     */
+    template <typename CharType>
+    future<temporary_buffer<CharType>>
+    dma_read_bulk(uint64_t offset, size_t range_size, const io_priority_class& pc = default_priority_class()) {
+        return _file_impl->dma_read_bulk(offset, range_size, pc).then([] (temporary_buffer<uint8_t> t) {
+            return temporary_buffer<CharType>(reinterpret_cast<CharType*>(t.get_write()), t.size(), t.release());
+        });
+    }
+
+    /// \brief Creates a handle that can be transported across shards.
+    ///
+    /// Creates a handle that can be transported across shards, and then
+    /// used to create a new shard-local \ref file object that refers to
+    /// the same on-disk file.
+    ///
+    /// \note Use on read-only files.
+    ///
+    File::file_handle dup();
+
+    template <typename CharType>
+    struct read_state;
+private:
+    friend class reactor;
+    friend class file_impl;
+};
+
+
+/// \brief A shard-transportable handle to a file
+/// If you need to access a file (for reads only) across multiple shards,
+/// you can use the file::dup() method to create a `file_handle`, transport
+/// this file handle to another shard, and use the handle to create \ref file
+/// object on that shard.  This is more efficient than calling open_file_dma()
+/// again.
+
+namespace File{
+class file_handle {
+    std::unique_ptr<File::file_handle_impl> _impl;
+private:
+    explicit file_handle(std::unique_ptr<File::file_handle_impl> impl) : _impl(std::move(impl)) {}
+public:
+    /// Copies a file handle object
+    file_handle(const file_handle&);
+    /// Moves a file handle object
+    file_handle(file_handle&&) noexcept;
+    /// Assigns a file handle object
+    file_handle& operator=(const file_handle&);
+    /// Move-assigns a file handle object
+    file_handle& operator=(file_handle&&) noexcept;
+    /// Converts the file handle object to a \ref file.
+    file to_file() const &;
+    /// Converts the file handle object to a \ref file.
+    file to_file() &&;
+    friend class ::file;
+};
+}
+template <typename CharType>
+struct file::read_state {
+    typedef temporary_buffer<CharType> tmp_buf_type;
+    read_state(uint64_t offset, uint64_t front, size_t to_read,
+            size_t memory_alignment, size_t disk_alignment)
+    : buf(tmp_buf_type::aligned(memory_alignment,
+                                align_up(to_read, disk_alignment)))
+    , _offset(offset)
+    , _to_read(to_read)
+    , _front(front) {}
+    bool done() const {
+        return eof || pos >= _to_read;
+    }
+    /**
+     * Trim the buffer to the actual number of read bytes and cut the
+     * bytes from offset 0 till "_front".
+     *
+     * @note this function has to be called only if we read bytes beyond
+     *       "_front".
+     */
+    void trim_buf_before_ret() {
+        if (have_good_bytes()) {
+            buf.trim(pos);
+            buf.trim_front(_front);
+        } else {
+            buf.trim(0);
+        }
+    }
+    uint64_t cur_offset() const {
+        return _offset + pos;
+    }
+    size_t left_space() const {
+        return buf.size() - pos;
+    }
+    size_t left_to_read() const {
+        // positive as long as (done() == false)
+        return _to_read - pos;
+    }
+    void append_new_data(tmp_buf_type& new_data) {
+        auto to_copy = std::min(left_space(), new_data.size());
+        std::memcpy(buf.get_write() + pos, new_data.get(), to_copy);
+        pos += to_copy;
+    }
+    bool have_good_bytes() const {
+        return pos > _front;
+    }
+
+public:
+    bool         eof      = false;
+    tmp_buf_type buf;
+    size_t       pos      = 0;
+private:
+    uint64_t     _offset;
+    size_t       _to_read;
+    uint64_t     _front;
+};
+
+
+
+
+class thread_pool {
+    uint64_t _aio_threaded_fallbacks = 0;
+    // FIXME: implement using reactor_notifier abstraction we used for SMP
+    syscall_work_queue inter_thread_wq;
+    posix_thread _worker_thread;
+    std::atomic<bool> _stopped = { false };
+    std::atomic<bool> _main_thread_idle = { false };
+    pthread_t _notify;
+public:
+    explicit thread_pool(std::string thread_name);
+    ~thread_pool();
+    template <typename T, typename Func>
+    future<T> submit(Func func) {
+        ++_aio_threaded_fallbacks;
+        return inter_thread_wq.submit<T>(std::move(func));
+    }
+    uint64_t operation_count() const { return _aio_threaded_fallbacks; }
+    unsigned complete() { return inter_thread_wq.complete(); }
+    // Before we enter interrupt mode, we must make sure that the syscall thread will properly
+    // generate signals to wake us up. This means we need to make sure that all modifications to
+    // the pending and completed fields in the inter_thread_wq are visible to all threads.
+    // Simple release-acquire won't do because we also need to serialize all writes that happens
+    // before the syscall thread loads this value, so we'll need full seq_cst.
+    void enter_interrupt_mode() { _main_thread_idle.store(true, std::memory_order_seq_cst); }
+    // When we exit interrupt mode, however, we can safely used relaxed order. If any reordering
+    // takes place, we'll get an extra signal and complete will be called one extra time, which is
+    // harmless.
+    void exit_interrupt_mode() { _main_thread_idle.store(false, std::memory_order_relaxed); }
+    void work(std::string thread_name);
+};
+
+
+
+class reactor_backend {
+public:
+    virtual ~reactor_backend() {};
+    // wait_and_process() waits for some events to become available, and
+    // processes one or more of them. If block==false, it doesn't wait,
+    // and just processes events that have already happened, if any.
+    // After the optional wait, just before processing the events, the
+    // pre_process() function is called.
+    virtual bool wait_and_process(int timeout = -1, const sigset_t* active_sigmask = nullptr) = 0;
+    // Methods that allow polling on file descriptors. This will only work on
+    // reactor_backend_epoll. Other reactor_backend will probably abort if
+    // they are called (which is fine if no file descriptors are waited on):
+    virtual future<> readable(pollable_fd_state& fd) = 0;
+    virtual future<> writeable(pollable_fd_state& fd) = 0;
+    virtual void forget(pollable_fd_state& fd) = 0;
+    // Methods that allow polling on a reactor_notifier. This is currently
+    // used only for reactor_backend_osv, but in the future it should really
+    // replace the above functions.
+    virtual future<> notified(reactor_notifier *n) = 0;
+    // Methods for allowing sending notifications events between threads.
+    virtual std::unique_ptr<reactor_notifier> make_reactor_notifier() = 0;
+};
+
+class reactor_backend_epoll : public reactor_backend {
+private:
+    file_desc _epollfd;
+    future<> get_epoll_future(pollable_fd_state& fd,
+            promise<> pollable_fd_state::* pr, int event);
+    void complete_epoll_event(pollable_fd_state& fd,
+            promise<> pollable_fd_state::* pr, int events, int event);
+    void abort_fd(pollable_fd_state& fd, std::exception_ptr ex,
+            promise<> pollable_fd_state::* pr, int event);
+public:
+    reactor_backend_epoll();
+    virtual ~reactor_backend_epoll() override { }
+    virtual bool wait_and_process(int timeout, const sigset_t* active_sigmask) override;
+    virtual future<> readable(pollable_fd_state& fd) override;
+    virtual future<> writeable(pollable_fd_state& fd) override;
+    virtual void forget(pollable_fd_state& fd) override;
+    virtual future<> notified(reactor_notifier *n) override;
+    virtual std::unique_ptr<reactor_notifier> make_reactor_notifier() override;
+    void abort_reader(pollable_fd_state& fd, std::exception_ptr ex);
+    void abort_writer(pollable_fd_state& fd, std::exception_ptr ex);
+};
+
+class reactor_notifier_epoll : public reactor_notifier {
+    writeable_eventfd _write;
+    readable_eventfd _read;
+public:
+    reactor_notifier_epoll()
+        : _write()
+        , _read(_write.read_side()) {
+    }
+    virtual future<> wait() override {
+        // convert _read.wait(), a future<size_t>, to a future<>:
+        return _read.wait().then([] (size_t ignore) {
+            return make_ready_future<>();
+        });
+    }
+    virtual void signal() override {
+        _write.signal(1);
+    }
+};
+enum class open_flags {
+    rw = O_RDWR,
+    ro = O_RDONLY,
+    wo = O_WRONLY,
+    create = O_CREAT,
+    truncate = O_TRUNC,
+    exclusive = O_EXCL,
+};
+
+inline open_flags operator|(open_flags a, open_flags b) {
+    return open_flags(static_cast<unsigned int>(a) | static_cast<unsigned int>(b));
+}
+
+struct reactor {
+    struct poller {
+        std::unique_ptr<pollfn> _pollfn;
+        class registration_task;
+        class deregistration_task;
+        registration_task* _registration_task;
+    public:
+        template <typename Func> // signature: bool ()
+        static poller simple(Func&& poll) {
+            return poller(make_pollfn(std::forward<Func>(poll)));
+        }
+        poller(std::unique_ptr<pollfn> fn)
+                : _pollfn(std::move(fn)) {
+            do_register();
+        }
+        ~poller();
+        poller(poller&& x);
+        poller& operator=(poller&& x);
+        void do_register();
+        friend class reactor;
+    };
+/*---------构造函数和析构函数----------------*/
+    // reactor();
+    reactor(unsigned int id);
+    ~reactor();
+    reactor(const reactor&) = delete;
+    reactor& operator=(const reactor&) = delete;
+    unsigned _id = 0;
+    std::deque<double> _loads;
+    double _load = 0;
+/*----------定时器相关------------------------*/
+    steady_clock_type::duration _total_idle;
+    std::unique_ptr<lowres_clock> _lowres_clock;
+    lowres_clock::time_point _lowres_next_timeout;
+    timer_t _steady_clock_timer = {};
+    timer_set<timer<steady_clock_type>> _timers;
+    typename timer_set<timer<steady_clock_type>>::timer_list_t _expired_timers;
+    timer_set<timer<lowres_clock>> _lowres_timers;
+    typename timer_set<timer<lowres_clock>>::timer_list_t _expired_lowres_timers;
+    timer_set<timer<manual_clock>> _manual_timers;
+    typename timer_set<timer<manual_clock>>::timer_list_t _expired_manual_timers;
+    using steady_timer = timer<steady_clock_type>;
+    using lowres_timer = timer<lowres_clock>;
+    using manual_timer = timer<manual_clock>;
+    file_desc _task_quota_timer;
+    std::optional<pollable_fd> _aio_eventfd;
+    std::optional<poller> _epoll_poller;
+/*---------------------------------------------*/
+    void add_timer(steady_timer* tmr);
+    bool queue_timer(steady_timer* tmr);
+    void del_timer(steady_timer* tmr);
+    void add_timer(lowres_timer* tmr);
+    bool queue_timer(lowres_timer* tmr);
+    void del_timer(lowres_timer* tmr);
+    void add_timer(manual_timer* tmr);
+    bool queue_timer(manual_timer* tmr);
+    void del_timer(manual_timer* tmr);
+    void enable_timer(steady_clock_type::time_point when);
+    bool do_expire_lowres_timers();
+    template <typename T, typename E, typename EnableFunc>
+    void complete_timers(T&, E&, EnableFunc&& enable_fn);
+    bool do_check_lowres_timers() const;
+    void expire_manual_timers();
+/*---------------信号处理相关------------------------*/
+    signals _signals;
+    bool _handle_sigint = true;
+    void block_notifier(int); 
+/*----------任务相关-------------------*/
+    bool _stopping = false;
+    bool _stopped = false;
+    int _return = 0;
+    unsigned _tasks_processed_report_threshold;
+    std::chrono::duration<double> _task_quota;
+    condition_variable _stop_requested;
+    std::atomic<bool> _sleeping alignas(64);
+    std::atomic<uint64_t> _tasks_processed = { 0 };
+    std::atomic<uint64_t> _polls = { 0 };
+    std::atomic<unsigned> _tasks_processed_stalled = { 0 };
+    std::deque<std::unique_ptr<task>> _pending_tasks;
+    void run_tasks(std::deque<std::unique_ptr<task>>& tasks);
+    std::vector<std::function<future<> ()>> _exit_funcs;//为什么不用引用?
+    void add_task(std::unique_ptr<task>&& t) { _pending_tasks.push_back(std::move(t)); }
+    void add_urgent_task(std::unique_ptr<task>&& t) { _pending_tasks.push_front(std::move(t)); }
+    void add_high_priority_task(std::unique_ptr<task>&& t){
+            _pending_tasks.push_front(std::move(t));
+            // break .then() chains
+            g_need_preempt = true;
+    }
+    void force_poll() {
+        g_need_preempt = true;
+    }
+    void at_exit(std::function<future<> ()> func);
+    void exit(int ret);
+    void stop();
+    future<> run_exit_tasks();
+    semaphore _io_context_available;
+    static constexpr size_t max_aio = 128;
+    semaphore _cpu_started;
+    promise<> _start_promise;
+    future<> when_started() { return _start_promise.get_future(); }
+    /*----------------全局--------------*/
+    int run();
+    /*----------配置相关----------------*/
+    static boost::program_options::options_description get_options_description();
+    void configure(boost::program_options::variables_map config);
+   /*----------------------资源分配相关-----------------------*/
+
+    shard_id _io_coordinator;
+    io_queue* _io_queue;
+    std::unique_ptr<io_queue> my_io_queue = {};
+    pthread_t _thread_id alignas(64) = pthread_self();
+    shard_id cpu_id() const { return _id; }
+    void wakeup() { pthread_kill(_thread_id, alarm_signal());}
+    std::chrono::nanoseconds calculate_poll_time();
+    /*-----------其他---------------*/
+    sigset_t _active_sigmask; // holds sigmask while sleeping with sig disabled
+    unsigned _max_task_backlog = 1000;
+    std::chrono::nanoseconds _max_poll_time = calculate_poll_time();
+    bool _strict_o_direct = true;
+    /*----------------------poller相关----------------------------------------------------*/
+    std::vector<pollfn*> _pollers;
+    thread_pool _thread_pool;
+        reactor_backend_epoll _backend;
+    
+    void unregister_poller(pollfn* p);
+    void register_poller(pollfn* p);
+
+    class io_pollfn;
+    class signal_pollfn;
+    class aio_batch_submit_pollfn;
+    class batch_flush_pollfn;
+    class smp_pollfn;
+    class drain_cross_cpu_freelist_pollfn;
+    class lowres_timer_pollfn;
+    class manual_timer_pollfn;
+    class epoll_pollfn;
+    class syscall_pollfn;
+    class execution_stage_pollfn;
+    bool poll_once();
+    bool pure_poll_once();
+    bool flush_tcp_batches();
+    bool flush_pending_aio(); 
+    /*----------------------------------IO相关--------------------------------------------*/
+    std::deque<output_stream<char>* > _flush_batching;
+    io_context_t _io_context;
+    std::vector<struct ::iocb> _pending_aio;
+    bool process_io();
+    void start_epoll();
+    void start_aio_eventfd_loop();
+    server_socket listen(socket_address sa, listen_options opts = {});
+    future<connected_socket> connect(socket_address sa);
+    future<connected_socket> connect(socket_address, socket_address, transport proto = transport::TCP);
+    pollable_fd posix_listen(socket_address sa, listen_options opts = {});
+    bool posix_reuseport_available() const { return _reuseport; }
+    lw_shared_ptr<pollable_fd> make_pollable_fd(socket_address sa, transport proto = transport::TCP);
+    future<> posix_connect(lw_shared_ptr<pollable_fd> pfd, socket_address sa, socket_address local);
+    future<pollable_fd, socket_address> accept(pollable_fd_state& listen_fd);
+    future<size_t> read_some(pollable_fd_state& fd, void* buffer, size_t size);
+    future<size_t> read_some(pollable_fd_state& fd, const std::vector<iovec>& iov);
+    future<size_t> write_some(pollable_fd_state& fd, const void* buffer, size_t size);
+    future<> write_all(pollable_fd_state& fd, const void* buffer, size_t size);
+    future<file> open_file_dma(std::string name, open_flags flags, file_open_options options = {});
+    future<file> open_directory(std::string name);
+    future<> make_directory(std::string name);
+    future<> touch_directory(std::string name);
+    future<std::optional<directory_entry_type>> cfile_type(std::string name);
+    future<uint64_t> file_size(std::string pathname);
+    future<bool> file_exists(std::string pathname);
+    future<fs_type> file_system_at(std::string pathname);
+    future<> remove_file(std::string pathname);
+    future<> rename_file(std::string old_pathname, std::string new_pathname);
+    future<> link_file(std::string oldpath, std::string newpath);
+    future<> writeable(pollable_fd_state& fd) {
+        return _backend.writeable(fd);
+    }
+    // In the following three methods, prepare_io is not guaranteed to execute in the same processor
+    // in which it was generated. Therefore, care must be taken to avoid the use of objects that could
+    // be destroyed within or at exit of prepare_io.
+    template <typename Func>
+    future<io_event> submit_io(Func prepare_io);
+    template <typename Func>
+    future<io_event> submit_io_read(const io_priority_class& priority_class, size_t len, Func prepare_io);
+    template <typename Func>
+    future<io_event> submit_io_write(const io_priority_class& priority_class, size_t len, Func prepare_io);
+    bool wait_and_process(int timeout = 0, const sigset_t* active_sigmask = nullptr) {
+        return _backend.wait_and_process(timeout, active_sigmask);
+    }
+    future<> readable(pollable_fd_state& fd) {
+        return _backend.readable(fd);
+    }
+    future<> writeable(pollable_fd_state& fd) {
+        return _backend.writeable(fd);
+    }
+    void forget(pollable_fd_state& fd) {
+        _backend.forget(fd);
+    }
+    future<> notified(reactor_notifier *n) {
+        return _backend.notified(n);
+    }
+    void abort_reader(pollable_fd_state& fd, std::exception_ptr ex) {
+        return _backend.abort_reader(fd, std::move(ex));
+    }
+    void abort_writer(pollable_fd_state& fd, std::exception_ptr ex) {
+        return _backend.abort_writer(fd, std::move(ex));
+    }
+    void enable_timer(steady_clock_type::time_point when);
+    std::unique_ptr<reactor_notifier> make_reactor_notifier() {
+        return _backend.make_reactor_notifier();
+    }
+    /// Sets the "Strict DMA" flag.
+    /// When true (default), file I/O operations must use DMA.  This is
+    /// the most performant option, but does not work on some file systems
+    /// such as tmpfs or aufs (used in some Docker setups).
+    ///
+    /// When false, file I/O operations can fall back to buffered I/O if
+    /// DMA is not available.  This can result in dramatic reducation in
+    /// performance and an increase in memory consumption.
+    void set_strict_dma(bool value) {
+        _strict_o_direct = value;
+    }
+
+    /*-------------------------------------网络相关--------------------------------------------------------------------*/
+    const bool _reuseport;
+    bool posix_reuseport_detect();
+    std::unique_ptr<network_stack> _network_stack;
+    promise<std::unique_ptr<network_stack>> _network_stack_ready_promise;
+};
+
+bool
+reactor::pure_poll_once() {
+    for (auto c : _pollers) {
+        if (c->pure_poll()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool reactor::flush_pending_aio() {
+    bool did_work = false;
+    while (!_pending_aio.empty()) {
+        auto nr = _pending_aio.size();
+        struct iocb* iocbs[max_aio];
+        for (size_t i = 0; i < nr; ++i) {
+            iocbs[i] = &_pending_aio[i];
+        }
+        auto r = ::io_submit(_io_context, nr, iocbs);
+        size_t nr_consumed;
+        if (r < 0) {
+            auto ec = -r;
+            switch (ec) {
+                case EAGAIN:
+                    return did_work;
+                case EBADF: {
+                    auto pr = reinterpret_cast<promise<io_event>*>(iocbs[0]->data);
+                    try {
+                        // throw_kernel_error(r);
+                        std::cout<<"error"<<std::endl;
+                        throw std::system_error(ec, std::system_category());
+                    } catch (...) {
+                        pr->set_exception(std::current_exception());
+                    }
+                    delete pr;
+                    _io_context_available.signal(1);
+                    // if EBADF, it means that the first request has a bad fd, so
+                    // we will only remove it from _pending_aio and try again.
+                    nr_consumed = 1;
+                    break;
+                }
+                default:
+                    throw std::system_error(ec, std::system_category());
+                    abort();
+            }
+        } else {
+            nr_consumed = size_t(r);
+        }
+
+        did_work = true;
+        if (nr_consumed == nr) {
+            _pending_aio.clear();
+        } else {
+            _pending_aio.erase(_pending_aio.begin(), _pending_aio.begin() + nr_consumed);
+        }
+    }
+    return did_work;
+}
+
+
+
+bool reactor::process_io()
+{
+    io_event ev[max_aio];
+    struct timespec timeout = {0, 0};
+    auto n = ::io_getevents(_io_context, 1, max_aio, ev, &timeout);
+    assert(n >= 0);
+    for (size_t i = 0; i < size_t(n); ++i) {
+        auto pr = reinterpret_cast<promise<io_event>*>(ev[i].data);
+        pr->set_value(ev[i]);
+        delete pr;
+    }
+    _io_context_available.signal(n);
+    return n;
+}
 
 void reactor::register_poller(pollfn* p) {
     _pollers.push_back(p);
@@ -4082,6 +6691,27 @@ void reactor::register_poller(pollfn* p) {
 void reactor::unregister_poller(pollfn* p) {
     _pollers.erase(std::find(_pollers.begin(), _pollers.end(), p));
 }
+
+
+void
+reactor::start_epoll() {
+    if (!_epoll_poller) {
+        _epoll_poller = poller(std::make_unique<epoll_pollfn>(*this));
+    }
+}
+
+bool
+reactor::flush_tcp_batches() {
+    bool work = _flush_batching.size();
+    while (!_flush_batching.empty()) {
+        auto os = std::move(_flush_batching.front());
+        _flush_batching.pop_front();
+        os->poll_flush();
+    }
+    return work;
+}
+
+
 
 class reactor::poller::registration_task : public task {
 private:
@@ -4101,6 +6731,126 @@ public:
         _p = p;
     }
 };
+
+
+
+
+reactor_backend_epoll::reactor_backend_epoll()
+    : _epollfd(file_desc::epoll_create(EPOLL_CLOEXEC)) {
+}
+
+
+future<> reactor_backend_epoll::get_epoll_future(pollable_fd_state& pfd,
+        promise<> pollable_fd_state::*pr, int event) {
+    if (pfd.events_known & event) {
+        pfd.events_known &= ~event;
+        return make_ready_future();
+    }
+    pfd.events_requested |= event;
+    if (!(pfd.events_epoll & event)) {
+        auto ctl = pfd.events_epoll ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
+        pfd.events_epoll |= event;
+        ::epoll_event eevt;
+        eevt.events = pfd.events_epoll;
+        eevt.data.ptr = &pfd;
+        int r = ::epoll_ctl(_epollfd.get(), ctl, pfd.fd.get(), &eevt);
+        assert(r == 0);
+        engine().start_epoll();
+    }
+    pfd.*pr = promise<>();
+    return (pfd.*pr).get_future();
+}
+
+void reactor_backend_epoll::abort_fd(pollable_fd_state& pfd, std::exception_ptr ex,
+                                     promise<> pollable_fd_state::* pr, int event) {
+    if (pfd.events_epoll & event) {
+        pfd.events_epoll &= ~event;
+        auto ctl = pfd.events_epoll ? EPOLL_CTL_MOD : EPOLL_CTL_DEL;
+        ::epoll_event eevt;
+        eevt.events = pfd.events_epoll;
+        eevt.data.ptr = &pfd;
+        int r = ::epoll_ctl(_epollfd.get(), ctl, pfd.fd.get(), &eevt);
+        assert(r == 0);
+    }
+    if (pfd.events_requested & event) {
+        pfd.events_requested &= ~event;
+        (pfd.*pr).set_exception(std::move(ex));
+    }
+    pfd.events_known &= ~event;
+}
+
+future<> reactor_backend_epoll::readable(pollable_fd_state& fd) {
+    return get_epoll_future(fd, &pollable_fd_state::pollin, EPOLLIN);
+}
+
+future<> reactor_backend_epoll::writeable(pollable_fd_state& fd) {
+    return get_epoll_future(fd, &pollable_fd_state::pollout, EPOLLOUT);
+}
+
+void reactor_backend_epoll::abort_reader(pollable_fd_state& fd, std::exception_ptr ex) {
+    abort_fd(fd, std::move(ex), &pollable_fd_state::pollin, EPOLLIN);
+}
+
+void reactor_backend_epoll::abort_writer(pollable_fd_state& fd, std::exception_ptr ex) {
+    abort_fd(fd, std::move(ex), &pollable_fd_state::pollout, EPOLLOUT);
+}
+
+void reactor_backend_epoll::forget(pollable_fd_state& fd) {
+    if (fd.events_epoll) {
+        ::epoll_ctl(_epollfd.get(), EPOLL_CTL_DEL, fd.fd.get(), nullptr);
+    }
+}
+
+future<> reactor_backend_epoll::notified(reactor_notifier *n) {
+    // Currently reactor_backend_epoll doesn't need to support notifiers,
+    // because we add to it file descriptors instead. But this can be fixed
+    // later.
+    std::cout << "reactor_backend_epoll does not yet support notifiers!\n";
+    abort();
+}
+
+void reactor_backend_epoll::complete_epoll_event(pollable_fd_state& pfd, promise<> pollable_fd_state::*pr,
+        int events, int event) {
+    if (pfd.events_requested & events & event) {
+        pfd.events_requested &= ~event;
+        pfd.events_known &= ~event;
+        (pfd.*pr).set_value();
+        pfd.*pr = promise<>();
+    }
+}
+
+
+
+
+bool
+reactor_backend_epoll::wait_and_process(int timeout, const sigset_t* active_sigmask) {
+    std::array<epoll_event, 128> eevt;
+    int nr = ::epoll_pwait(_epollfd.get(), eevt.data(), eevt.size(), timeout, active_sigmask);
+    if (nr == -1 && errno == EINTR) {
+        return false; // gdb can cause this
+    }
+    assert(nr != -1);
+    for (int i = 0; i < nr; ++i) {
+        auto& evt = eevt[i];
+        auto pfd = reinterpret_cast<pollable_fd_state*>(evt.data.ptr);
+        auto events = evt.events & (EPOLLIN | EPOLLOUT);
+        auto events_to_remove = events & ~pfd->events_requested;
+        complete_epoll_event(*pfd, &pollable_fd_state::pollin, events, EPOLLIN);
+        complete_epoll_event(*pfd, &pollable_fd_state::pollout, events, EPOLLOUT);
+        if (events_to_remove) {
+            pfd->events_epoll &= ~events_to_remove;
+            evt.events = pfd->events_epoll;
+            auto op = evt.events ? EPOLL_CTL_MOD : EPOLL_CTL_DEL;
+            ::epoll_ctl(_epollfd.get(), op, pfd->fd.get(), &evt);
+        }
+    }
+    return nr;
+}
+
+std::unique_ptr<reactor_notifier> reactor_backend_epoll::make_reactor_notifier() {
+    return std::make_unique<reactor_notifier_epoll>();
+}
+
 
 class reactor::poller::deregistration_task : public task {
 private:
@@ -4262,319 +7012,16 @@ public:
     }
 };
 
-class reactor::smp_pollfn final : public pollfn {
-    reactor& _r;
-    struct aligned_flag {
-        std::atomic<bool> flag;
-        char pad[63];
-        bool try_lock() {
-            return !flag.exchange(true, std::memory_order_relaxed);
-        }
-        void unlock() {
-            flag.store(false, std::memory_order_relaxed);
-        }
-    };
-    static aligned_flag _membarrier_lock;
-public:
-    smp_pollfn(reactor& r) : _r(r) {}
-    virtual bool poll() final override {
-        return smp::poll_queues();
-    }
-    virtual bool pure_poll() final override {
-        return smp::pure_poll_queues();
-    }
-    virtual bool try_enter_interrupt_mode() override {
-        // systemwide_memory_barrier() is very slow if run concurrently,
-        // so don't go to sleep if it is running now.
-        if (!_membarrier_lock.try_lock()) {
-            return false;
-        }
-        _r._sleeping.store(true, std::memory_order_relaxed);
-        systemwide_memory_barrier();
-        _membarrier_lock.unlock();
-        if (poll()) {
-            // raced
-            _r._sleeping.store(false, std::memory_order_relaxed);
-            return false;
-        }
-        return true;
-    }
-    virtual void exit_interrupt_mode() override final {
-        _r._sleeping.store(false, std::memory_order_relaxed);
-    }
-};
-
-class reactor::execution_stage_pollfn final : public pollfn {
-    internal::execution_stage_manager& _esm;
-public:
-    execution_stage_pollfn() : _esm(internal::execution_stage_manager::get()) { }
-
-    virtual bool poll() override {
-        return _esm.flush();
-    }
-    virtual bool pure_poll() override {
-        return _esm.poll();
-    }
-    virtual bool try_enter_interrupt_mode() override {
-        // This is a passive poller, so if a previous poll
-        // returned false (idle), there's no more work to do.
-        return true;
-    }
-    virtual void exit_interrupt_mode() override { }
-};
-
-
-class reactor::syscall_pollfn final : public pollfn {
-    reactor& _r;
-public:
-    syscall_pollfn(reactor& r) : _r(r) {}
-    virtual bool poll() final override {
-        return _r._thread_pool.complete();
-    }
-    virtual bool pure_poll() override final {
-        return poll(); // actually performs work, but triggers no user continuations, so okay
-    }
-    virtual bool try_enter_interrupt_mode() override {
-        _r._thread_pool.enter_interrupt_mode();
-        if (poll()) {
-            // raced
-            _r._thread_pool.exit_interrupt_mode();
-            return false;
-        }
-        return true;
-    }
-    virtual void exit_interrupt_mode() override final {
-        _r._thread_pool.exit_interrupt_mode();
-    }
-};
-
-
-// alignas(64) reactor::smp_pollfn::aligned_flag reactor::smp_pollfn::_membarrier_lock;
-
-class reactor::epoll_pollfn final : public pollfn {
-    reactor& _r;
-public:
-    epoll_pollfn(reactor& r) : _r(r) {}
-    virtual bool poll() final override {
-        return _r.wait_and_process();
-    }
-    virtual bool pure_poll() override final {
-        return poll(); // actually performs work, but triggers no user continuations, so okay
-    }
-    virtual bool try_enter_interrupt_mode() override {
-        // Since we'll be sleeping in epoll, no need to do anything
-        // for interrupt mode.
-        return true;
-    }
-    virtual void exit_interrupt_mode() override final {
-    }
-};
-
-
-
-inline
-future<size_t> pollable_fd::read_some(char* buffer, size_t size) {
-    return engine().read_some(*_s, buffer, size);
-}
-
-inline
-future<size_t> pollable_fd::read_some(uint8_t* buffer, size_t size) {
-    return engine().read_some(*_s, buffer, size);
-}
-
-inline
-future<size_t> pollable_fd::read_some(const std::vector<iovec>& iov) {
-    return engine().read_some(*_s, iov);
-}
-
-inline
-future<> pollable_fd::write_all(const char* buffer, size_t size) {
-    return engine().write_all(*_s, buffer, size);
-}
-
-inline
-future<> pollable_fd::write_all(const uint8_t* buffer, size_t size) {
-    return engine().write_all(*_s, buffer, size);
-}
-
-inline
-future<size_t> pollable_fd::write_some(net::packet& p) {
-    return engine().writeable(*_s).then([this, &p] () mutable {
-        static_assert(offsetof(iovec, iov_base) == offsetof(net::fragment, base) &&
-            sizeof(iovec::iov_base) == sizeof(net::fragment::base) &&
-            offsetof(iovec, iov_len) == offsetof(net::fragment, size) &&
-            sizeof(iovec::iov_len) == sizeof(net::fragment::size) &&
-            alignof(iovec) == alignof(net::fragment) &&
-            sizeof(iovec) == sizeof(net::fragment)
-            , "net::fragment and iovec should be equivalent");
-
-        iovec* iov = reinterpret_cast<iovec*>(p.fragment_array());
-        msghdr mh = {};
-        mh.msg_iov = iov;
-        mh.msg_iovlen = p.nr_frags();
-        auto r = get_file_desc().sendmsg(&mh, MSG_NOSIGNAL);
-        if (!r) {
-            return write_some(p);
-        }
-        if (size_t(*r) == p.len()) {
-            _s->speculate_epoll(EPOLLOUT);
-        }
-        return make_ready_future<size_t>(*r);
-    });
-}
-
-inline
-future<> pollable_fd::write_all(net::packet& p) {
-    return write_some(p).then([this, &p] (size_t size) {
-        if (p.len() == size) {
-            return make_ready_future<>();
-        }
-        p.trim_front(size);
-        return write_all(p);
-    });
-}
-
-inline
-future<> pollable_fd::readable() {
-    return engine().readable(*_s);
-}
-
-inline
-future<> pollable_fd::writeable() {
-    return engine().writeable(*_s);
-}
-
-inline
-void
-pollable_fd::abort_reader(std::exception_ptr ex) {
-    engine().abort_reader(*_s, std::move(ex));
-}
-
-inline
-void
-pollable_fd::abort_writer(std::exception_ptr ex) {
-    engine().abort_writer(*_s, std::move(ex));
-}
-
-inline
-future<pollable_fd, socket_address> pollable_fd::accept() {
-    return engine().accept(*_s);
-}
-
-inline
-future<size_t> pollable_fd::recvmsg(struct msghdr *msg) {
-    return engine().readable(*_s).then([this, msg] {
-        auto r = get_file_desc().recvmsg(msg, 0);
-        if (!r) {
-            return recvmsg(msg);
-        }
-        // We always speculate here to optimize for throughput in a workload
-        // with multiple outstanding requests. This way the caller can consume
-        // all messages without resorting to epoll. However this adds extra
-        // recvmsg() call when we hit the empty queue condition, so it may
-        // hurt request-response workload in which the queue is empty when we
-        // initially enter recvmsg(). If that turns out to be a problem, we can
-        // improve speculation by using recvmmsg().
-        _s->speculate_epoll(EPOLLIN);
-        return make_ready_future<size_t>(*r);
-    });
-};
-
-inline
-future<size_t> pollable_fd::sendmsg(struct msghdr* msg) {
-    return engine().writeable(*_s).then([this, msg] () mutable {
-        auto r = get_file_desc().sendmsg(msg, 0);
-        if (!r) {
-            return sendmsg(msg);
-        }
-        // For UDP this will always speculate. We can't know if there's room
-        // or not, but most of the time there should be so the cost of mis-
-        // speculation is amortized.
-        if (size_t(*r) == iovec_len(msg->msg_iov, msg->msg_iovlen)) {
-            _s->speculate_epoll(EPOLLOUT);
-        }
-        return make_ready_future<size_t>(*r);
-    });
-}
-
-inline
-future<size_t> pollable_fd::sendto(socket_address addr, const void* buf, size_t len) {
-    return engine().writeable(*_s).then([this, buf, len, addr] () mutable {
-        auto r = get_file_desc().sendto(addr, buf, len, 0);
-        if (!r) {
-            return sendto(std::move(addr), buf, len);
-        }
-        // See the comment about speculation in sendmsg().
-        if (size_t(*r) == len) {
-            _s->speculate_epoll(EPOLLOUT);
-        }
-        return make_ready_future<size_t>(*r);
-    });
-}
-
-
-void reactor::start_aio_eventfd_loop() {
-    if (!_aio_eventfd) {
-        return;
-    }
-    future<> loop_done = repeat([this] {
-        return _aio_eventfd->readable().then([this] {
-            char garbage[8];
-            ::read(_aio_eventfd->get_fd(), garbage, 8); // totally uninteresting
-            return _stopping ? stop_iteration::yes : stop_iteration::no;
-        });
-    });
-    // must use make_lw_shared, because at_exit expects a copyable function
-    at_exit([loop_done = make_lw_shared(std::move(loop_done))] {
-        return std::move(*loop_done);
-    });
-}
-
-/* not yet implemented for OSv. TODO: do the notification like we do class smp. */
-
-
-readable_eventfd writeable_eventfd::read_side() {
-    return readable_eventfd(_fd.dup());
-}
-
-file_desc writeable_eventfd::try_create_eventfd(size_t initial) {
-    assert(size_t(int(initial)) == initial);
-    return file_desc::eventfd(initial, EFD_CLOEXEC);
-}
-
-void writeable_eventfd::signal(size_t count) {
-    uint64_t c = count;
-    auto r = _fd.write(&c, sizeof(c));
-    assert(r == sizeof(c));
-}
-
-writeable_eventfd readable_eventfd::write_side() {
-    return writeable_eventfd(_fd.get_file_desc().dup());
-}
-
-file_desc readable_eventfd::try_create_eventfd(size_t initial) {
-    assert(size_t(int(initial)) == initial);
-    return file_desc::eventfd(initial, EFD_CLOEXEC | EFD_NONBLOCK);
-}
-
-future<size_t> readable_eventfd::wait() {
-    return engine().readable(*_fd._s).then([this] {
-        uint64_t count;
-        int r = ::read(_fd.get_fd(), &count, sizeof(count));
-        assert(r == sizeof(count));
-        return make_ready_future<size_t>(count);
-    });
-}
 
 void
 reactor::block_notifier(int) {
     auto steps = engine()._tasks_processed_stalled.load(std::memory_order_relaxed);
     auto delta = std::chrono::duration_cast<std::chrono::milliseconds>(engine()._task_quota * steps);
 
-    backtrace_buffer buf;
-    buf.append("Reactor stalled for ");
-    buf.append_decimal(uint64_t(delta.count()));
-    buf.append(" ms");
+    // backtrace_buffer buf;
+    // buf.append("Reactor stalled for ");
+    // buf.append_decimal(uint64_t(delta.count()));
+    // buf.append(" ms");
     // print_with_backtrace(buf);
 }
 
@@ -5121,6 +7568,313 @@ smp_message_queue** smp::_qs;//为什么是二级指针？
 std::thread::id smp::_tmain;
 
 
+
+class reactor::smp_pollfn final : public pollfn {
+    reactor& _r;
+    struct aligned_flag {
+        std::atomic<bool> flag;
+        char pad[63];
+        bool try_lock() {
+            return !flag.exchange(true, std::memory_order_relaxed);
+        }
+        void unlock() {
+            flag.store(false, std::memory_order_relaxed);
+        }
+    };
+    static aligned_flag _membarrier_lock;
+public:
+    smp_pollfn(reactor& r) : _r(r) {}
+    virtual bool poll() final override {
+        return smp::poll_queues();
+    }
+    virtual bool pure_poll() final override {
+        return smp::pure_poll_queues();
+    }
+    virtual bool try_enter_interrupt_mode() override {
+        // systemwide_memory_barrier() is very slow if run concurrently,
+        // so don't go to sleep if it is running now.
+        if (!_membarrier_lock.try_lock()) {
+            return false;
+        }
+        _r._sleeping.store(true, std::memory_order_relaxed);
+        systemwide_memory_barrier();
+        _membarrier_lock.unlock();
+        if (poll()) {
+            // raced
+            _r._sleeping.store(false, std::memory_order_relaxed);
+            return false;
+        }
+        return true;
+    }
+    virtual void exit_interrupt_mode() override final {
+        _r._sleeping.store(false, std::memory_order_relaxed);
+    }
+};
+
+class reactor::execution_stage_pollfn final : public pollfn {
+    internal::execution_stage_manager& _esm;
+public:
+    execution_stage_pollfn() : _esm(internal::execution_stage_manager::get()) { }
+
+    virtual bool poll() override {
+        return _esm.flush();
+    }
+    virtual bool pure_poll() override {
+        return _esm.poll();
+    }
+    virtual bool try_enter_interrupt_mode() override {
+        // This is a passive poller, so if a previous poll
+        // returned false (idle), there's no more work to do.
+        return true;
+    }
+    virtual void exit_interrupt_mode() override { }
+};
+
+
+class reactor::syscall_pollfn final : public pollfn {
+    reactor& _r;
+public:
+    syscall_pollfn(reactor& r) : _r(r) {}
+    virtual bool poll() final override {
+        return _r._thread_pool.complete();
+    }
+    virtual bool pure_poll() override final {
+        return poll(); // actually performs work, but triggers no user continuations, so okay
+    }
+    virtual bool try_enter_interrupt_mode() override {
+        _r._thread_pool.enter_interrupt_mode();
+        if (poll()) {
+            // raced
+            _r._thread_pool.exit_interrupt_mode();
+            return false;
+        }
+        return true;
+    }
+    virtual void exit_interrupt_mode() override final {
+        _r._thread_pool.exit_interrupt_mode();
+    }
+};
+
+
+// alignas(64) reactor::smp_pollfn::aligned_flag reactor::smp_pollfn::_membarrier_lock;
+
+class reactor::epoll_pollfn final : public pollfn {
+    reactor& _r;
+public:
+    epoll_pollfn(reactor& r) : _r(r) {}
+    virtual bool poll() final override {
+        return _r.wait_and_process();
+    }
+    virtual bool pure_poll() override final {
+        return poll(); // actually performs work, but triggers no user continuations, so okay
+    }
+    virtual bool try_enter_interrupt_mode() override {
+        // Since we'll be sleeping in epoll, no need to do anything
+        // for interrupt mode.
+        return true;
+    }
+    virtual void exit_interrupt_mode() override final {
+    }
+};
+
+
+
+inline
+future<size_t> pollable_fd::read_some(char* buffer, size_t size) {
+    return engine().read_some(*_s, buffer, size);
+}
+
+inline
+future<size_t> pollable_fd::read_some(uint8_t* buffer, size_t size) {
+    return engine().read_some(*_s, buffer, size);
+}
+
+inline
+future<size_t> pollable_fd::read_some(const std::vector<iovec>& iov) {
+    return engine().read_some(*_s, iov);
+}
+
+inline
+future<> pollable_fd::write_all(const char* buffer, size_t size) {
+    return engine().write_all(*_s, buffer, size);
+}
+
+inline
+future<> pollable_fd::write_all(const uint8_t* buffer, size_t size) {
+    return engine().write_all(*_s, buffer, size);
+}
+
+inline
+future<size_t> pollable_fd::write_some(net::packet& p) {
+    return engine().writeable(*_s).then([this, &p] () mutable {
+        static_assert(offsetof(iovec, iov_base) == offsetof(net::fragment, base) &&
+            sizeof(iovec::iov_base) == sizeof(net::fragment::base) &&
+            offsetof(iovec, iov_len) == offsetof(net::fragment, size) &&
+            sizeof(iovec::iov_len) == sizeof(net::fragment::size) &&
+            alignof(iovec) == alignof(net::fragment) &&
+            sizeof(iovec) == sizeof(net::fragment)
+            , "net::fragment and iovec should be equivalent");
+
+        iovec* iov = reinterpret_cast<iovec*>(p.fragment_array());
+        msghdr mh = {};
+        mh.msg_iov = iov;
+        mh.msg_iovlen = p.nr_frags();
+        auto r = get_file_desc().sendmsg(&mh, MSG_NOSIGNAL);
+        if (!r) {
+            return write_some(p);
+        }
+        if (size_t(*r) == p.len()) {
+            _s->speculate_epoll(EPOLLOUT);
+        }
+        return make_ready_future<size_t>(*r);
+    });
+}
+
+inline
+future<> pollable_fd::write_all(net::packet& p) {
+    return write_some(p).then([this, &p] (size_t size) {
+        if (p.len() == size) {
+            return make_ready_future<>();
+        }
+        p.trim_front(size);
+        return write_all(p);
+    });
+}
+
+inline
+future<> pollable_fd::readable() {
+    return engine().readable(*_s);
+}
+
+inline
+future<> pollable_fd::writeable() {
+    return engine().writeable(*_s);
+}
+
+inline
+void
+pollable_fd::abort_reader(std::exception_ptr ex) {
+    engine().abort_reader(*_s, std::move(ex));
+}
+
+inline
+void
+pollable_fd::abort_writer(std::exception_ptr ex) {
+    engine().abort_writer(*_s, std::move(ex));
+}
+
+inline
+future<pollable_fd, socket_address> pollable_fd::accept() {
+    return engine().accept(*_s);
+}
+
+inline
+future<size_t> pollable_fd::recvmsg(struct msghdr *msg) {
+    return engine().readable(*_s).then([this, msg] {
+        auto r = get_file_desc().recvmsg(msg, 0);
+        if (!r) {
+            return recvmsg(msg);
+        }
+        // We always speculate here to optimize for throughput in a workload
+        // with multiple outstanding requests. This way the caller can consume
+        // all messages without resorting to epoll. However this adds extra
+        // recvmsg() call when we hit the empty queue condition, so it may
+        // hurt request-response workload in which the queue is empty when we
+        // initially enter recvmsg(). If that turns out to be a problem, we can
+        // improve speculation by using recvmmsg().
+        _s->speculate_epoll(EPOLLIN);
+        return make_ready_future<size_t>(*r);
+    });
+};
+
+inline
+future<size_t> pollable_fd::sendmsg(struct msghdr* msg) {
+    return engine().writeable(*_s).then([this, msg] () mutable {
+        auto r = get_file_desc().sendmsg(msg, 0);
+        if (!r) {
+            return sendmsg(msg);
+        }
+        // For UDP this will always speculate. We can't know if there's room
+        // or not, but most of the time there should be so the cost of mis-
+        // speculation is amortized.
+        if (size_t(*r) == iovec_len(msg->msg_iov, msg->msg_iovlen)) {
+            _s->speculate_epoll(EPOLLOUT);
+        }
+        return make_ready_future<size_t>(*r);
+    });
+}
+
+inline
+future<size_t> pollable_fd::sendto(socket_address addr, const void* buf, size_t len) {
+    return engine().writeable(*_s).then([this, buf, len, addr] () mutable {
+        auto r = get_file_desc().sendto(addr, buf, len, 0);
+        if (!r) {
+            return sendto(std::move(addr), buf, len);
+        }
+        // See the comment about speculation in sendmsg().
+        if (size_t(*r) == len) {
+            _s->speculate_epoll(EPOLLOUT);
+        }
+        return make_ready_future<size_t>(*r);
+    });
+}
+struct stop_iteration_tag { };
+using stop_iteration = bool_class<stop_iteration_tag>;
+
+void reactor::start_aio_eventfd_loop() {
+    if (!_aio_eventfd) {
+        return;
+    }
+    future<> loop_done = repeat([this] {
+        return _aio_eventfd->readable().then([this] {
+            char garbage[8];
+            ::read(_aio_eventfd->get_fd(), garbage, 8); // totally uninteresting
+            return _stopping ? stop_iteration::yes : stop_iteration::no;
+        });
+    });
+    // must use make_lw_shared, because at_exit expects a copyable function
+    at_exit([loop_done = make_lw_shared(std::move(loop_done))] {
+        return std::move(*loop_done);
+    });
+}
+
+/* not yet implemented for OSv. TODO: do the notification like we do class smp. */
+
+
+readable_eventfd writeable_eventfd::read_side() {
+    return readable_eventfd(_fd.dup());
+}
+
+file_desc writeable_eventfd::try_create_eventfd(size_t initial) {
+    assert(size_t(int(initial)) == initial);
+    return file_desc::eventfd(initial, EFD_CLOEXEC);
+}
+
+void writeable_eventfd::signal(size_t count) {
+    uint64_t c = count;
+    auto r = _fd.write(&c, sizeof(c));
+    assert(r == sizeof(c));
+}
+
+writeable_eventfd readable_eventfd::write_side() {
+    return writeable_eventfd(_fd.get_file_desc().dup());
+}
+
+file_desc readable_eventfd::try_create_eventfd(size_t initial) {
+    assert(size_t(int(initial)) == initial);
+    return file_desc::eventfd(initial, EFD_CLOEXEC | EFD_NONBLOCK);
+}
+
+future<size_t> readable_eventfd::wait() {
+    return engine().readable(*_fd._s).then([this] {
+        uint64_t count;
+        int r = ::read(_fd.get_fd(), &count, sizeof(count));
+        assert(r == sizeof(count));
+        return make_ready_future<size_t>(count);
+    });
+}
+
+
 /// \brief Creates a \ref future in an available, failed state.
 ///
 /// Creates a \ref future object that is already resolved in a failed
@@ -5564,7 +8318,7 @@ thread_local std::list<thread_context*> thread_context::_all_threads;
 #include <iterator>
 #include <vector>
 #include <experimental/optional>
-#include "util/tuple_utils.hh"
+// #include "util/tuple_utils.hh"
 extern __thread size_t task_quota;
 struct parallel_for_each_state {
     // use optional<> to avoid out-of-line constructor
@@ -5666,8 +8420,7 @@ void do_until_continued(StopCondition&& stop_cond, AsyncAction&& action, promise
 }
 
 
-struct stop_iteration_tag { };
-using stop_iteration = bool_class<stop_iteration_tag>;
+
 
 
 template<typename AsyncAction>
@@ -5698,7 +8451,7 @@ future<> repeat(AsyncAction&& action) {
 
         promise<> p;
         auto f = p.get_future();
-        schedule(make_task([action = std::forward<AsyncAction>(action), p = std::move(p)]() mutable {
+        schedule_normal(make_task([action = std::forward<AsyncAction>(action), p = std::move(p)]() mutable {
             repeat(std::forward<AsyncAction>(action)).forward_to(std::move(p));
         }));
         return f;
@@ -7156,7 +9909,7 @@ static decltype(auto) install_signal_handler_stack() {
             assert(r == 0);
         } catch (...) {
             mem.release(); // We failed to restore previous stack, must leak it.
-            std::cout<<< "Failed to restore previous signal stack" << std::endl;
+            // std::cout<<< "Failed to restore previous signal stack" << std::endl;
         }
     });
 }
@@ -7349,7 +10102,7 @@ reactor::reactor(unsigned id)
     : _id(id)
     , _cpu_started(0)
     , _io_context(0)
-    , _io_context_available(max_aio){
+    , _io_context_available(max_aio),_reuseport(posix_reuseport_detect()){
     thread_impl::init();
     auto r = ::io_setup(max_aio, &_io_context);
     assert(r >= 0);
@@ -7385,6 +10138,19 @@ void reactor::at_exit(std::function<future<> ()> func) {
     _exit_funcs.push_back(std::move(func));
 }
 
+bool
+reactor::posix_reuseport_detect() {
+    return false; // FIXME: reuseport currently leads to heavy load imbalance. Until we fix that, just
+                  // disable it unconditionally.
+/*思考为什么 reuseport会引入负载不均衡*/
+    try {
+        file_desc fd = file_desc::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        fd.setsockopt(SOL_SOCKET, SO_REUSEPORT, 1);
+        return true;
+    } catch(std::system_error& e) {
+        return false;
+    }
+}
 
 void reactor::run_tasks(std::deque<std::unique_ptr<task>>& tasks) {
     while (!tasks.empty()) {
@@ -7869,7 +10635,7 @@ disable_abort_on_alloc_failure_temporarily::~disable_abort_on_alloc_failure_temp
 #include <sys/uio.h>  // For writev
 #include <boost/intrusive/list.hpp>
 #include <sys/mman.h>
-#include "../util/defer.hh"
+
 #include "../util/backtrace.hh"
 #include <unordered_set>
 #ifdef HAVE_NUMA
@@ -9262,23 +12028,23 @@ future<io_event> io_queue::queue_request(shard_id coordinator, const io_priority
 template <typename Func>
 future<io_event>
 reactor::submit_io(Func prepare_io) {
-    // return _io_context_available.wait(1).then([this, prepare_io = std::move(prepare_io)] () mutable {
-    //     auto pr = std::make_unique<promise<io_event>>();
-    //     iocb io;
-    //     prepare_io(io);
-    //     if (_aio_eventfd) {
-    //         io_set_eventfd(&io, _aio_eventfd->get_fd());
-    //     }
-    //     auto f = pr->get_future();
-    //     io.data = pr.get();
-    //     _pending_aio.push_back(io);
-    //     pr.release();
-    //     if ((_io_queue->queued_requests() > 0) ||
-    //         (_pending_aio.size() >= std::min(max_aio / 4, _io_queue->_capacity / 2))) {
-    //         flush_pending_aio();
-    //     }
-    //     return f;
-    // });
+    return _io_context_available.wait(1).then([this, prepare_io = std::move(prepare_io)] () mutable {
+        auto pr = std::make_unique<promise<io_event>>();
+        iocb io;
+        prepare_io(io);
+        if (_aio_eventfd) {
+            io_set_eventfd(&io, _aio_eventfd->get_fd());
+        }
+        auto f = pr->get_future();
+        io.data = pr.get();
+        _pending_aio.push_back(io);
+        pr.release();
+        if ((_io_queue->queued_requests() > 0) ||
+            (_pending_aio.size() >= std::min(max_aio / 4, _io_queue->_capacity / 2))) {
+            flush_pending_aio();
+        }
+        return f;
+    });
 }
 
 template <typename... T>
@@ -9342,9 +12108,6 @@ void timer<Clock>::set_callback(callback_t&& callback) {
     _callback = std::move(callback);
 }
 
-
-
-
 template <typename... T>
 template<typename promise<T...>::urgent Urgent>
 inline
@@ -9359,297 +12122,487 @@ void promise<T...>::make_ready() noexcept {
     }
 }
 
-// #include <boost/range/algorithm.hpp>
-// #include <boost/algorithm/string.hpp>
-// #include <boost/algorithm/string/replace.hpp>
-// #include <boost/range/algorithm_ext/erase.hpp>
+inline future<temporary_buffer<char>> data_source_impl::skip(uint64_t n)
+{
+    return do_with(uint64_t(n), [this] (uint64_t& n) {
+        return repeat_until_value([&] {
+            return get().then([&] (temporary_buffer<char> buffer) -> std::optional<temporary_buffer<char>> {
+                if (buffer.size() >= n) {
+                    buffer.trim_front(n);
+                    return std::move(buffer);
+                }
+                n -= buffer.size();
+                return { };
+            });
+        });
+    });
+}
 
-// namespace metrics {
+template<typename CharType>
+inline
+future<> output_stream<CharType>::write(const char_type* buf) {
+    return write(buf, strlen(buf));
+}
 
-// metric_groups::metric_groups() noexcept : _impl(impl::create_metric_groups()) {
-// }
+template<typename CharType>
+template<typename StringChar, typename SizeType, SizeType MaxSize>
+inline
+future<> output_stream<CharType>::write(const basic_sstring<StringChar, SizeType, MaxSize>& s) {
+    return write(reinterpret_cast<const CharType *>(s.c_str()), s.size());
+}
 
-// void metric_groups::clear() {
-//     _impl = impl::create_metric_groups();
-// }
+template<typename CharType>
+inline
+future<> output_stream<CharType>::write(const std::basic_string<CharType>& s) {
+    return write(s.c_str(), s.size());
+}
 
-// metric_groups::metric_groups(std::initializer_list<metric_group_definition> mg) : _impl(impl::create_metric_groups()) {
-//     for (auto&& i : mg) {
-//         add_group(i.name, i.metrics);
-//     }
-// }
-// metric_groups& metric_groups::add_group(const group_name_type& name, const std::initializer_list<metric_definition>& l) {
-//     _impl->add_group(name, l);
-//     return *this;
-// }
-// metric_group::metric_group() noexcept = default;
-// metric_group::~metric_group() = default;
-// metric_group::metric_group(const group_name_type& name, std::initializer_list<metric_definition> l) {
-//     add_group(name, l);
-// }
+template<typename CharType>
+future<> output_stream<CharType>::write(scattered_message<CharType> msg) {
+    return write(std::move(msg).release());
+}
 
-// metric_group_definition::metric_group_definition(const group_name_type& name, std::initializer_list<metric_definition> l) : name(name), metrics(l) {
-// }
+template<typename CharType>
+future<>
+output_stream<CharType>::zero_copy_put(net::packet p) {
+    // if flush is scheduled, disable it, so it will not try to write in parallel
+    _flush = false;
+    if (_flushing) {
+        // flush in progress, wait for it to end before continuing
+        return _in_batch.value().get_future().then([this, p = std::move(p)] () mutable {
+            return _fd.put(std::move(p));
+        });
+    } else {
+        return _fd.put(std::move(p));
+    }
+}
 
-// metric_group_definition::~metric_group_definition() = default;
+// Writes @p in chunks of _size length. The last chunk is buffered if smaller.
+template <typename CharType>
+future<>
+output_stream<CharType>::zero_copy_split_and_put(net::packet p) {
+    return repeat([this, p = std::move(p)] () mutable {
+        if (p.len() < _size) {
+            if (p.len()) {
+                _zc_bufs = std::move(p);
+            } else {
+                _zc_bufs = net::packet::make_null_packet();
+            }
+            return make_ready_future<stop_iteration>(stop_iteration::yes);
+        }
+        auto chunk = p.share(0, _size);
+        p.trim_front(_size);
+        return zero_copy_put(std::move(chunk)).then([] {
+            return stop_iteration::no;
+        });
+    });
+}
 
-// metric_groups::~metric_groups() = default;
-// metric_definition::metric_definition(metric_definition&& m) noexcept : _impl(std::move(m._impl)) {
-// }
+template<typename CharType>
+future<> output_stream<CharType>::write(net::packet p) {
+    static_assert(std::is_same<CharType, char>::value, "packet works on char");
 
-// metric_definition::~metric_definition()  = default;
+    if (p.len() != 0) {
+        assert(!_end && "Mixing buffered writes and zero-copy writes not supported yet");
 
-// metric_definition::metric_definition(impl::metric_definition_impl const& m) noexcept :
-//     _impl(std::make_unique<impl::metric_definition_impl>(m)) {
-// }
+        if (_zc_bufs) {
+            _zc_bufs.append(std::move(p));
+        } else {
+            _zc_bufs = std::move(p);
+        }
 
-// bool label_instance::operator<(const label_instance& id2) const {
-//     auto& id1 = *this;
-//     return std::tie(id1.key(), id1.value())
-//                 < std::tie(id2.key(), id2.value());
-// }
+        if (_zc_bufs.len() >= _size) {
+            if (_trim_to_size) {
+                return zero_copy_split_and_put(std::move(_zc_bufs));
+            } else {
+                return zero_copy_put(std::move(_zc_bufs));
+            }
+        }
+    }
+    return make_ready_future<>();
+}
 
-// bool label_instance::operator==(const label_instance& id2) const {
-//     auto& id1 = *this;
-//     return std::tie(id1.key(), id1.value())
-//                     == std::tie(id2.key(), id2.value());
-// }
+template<typename CharType>
+future<> output_stream<CharType>::write(temporary_buffer<CharType> p) {
+    if (p.empty()) {
+        return make_ready_future<>();
+    }
+    assert(!_end && "Mixing buffered writes and zero-copy writes not supported yet");
+
+    return write(net::packet(std::move(p)));
+}
+
+template <typename CharType>
+future<temporary_buffer<CharType>>
+input_stream<CharType>::read_exactly_part(size_t n, tmp_buf out, size_t completed) {
+    if (available()) {
+        auto now = std::min(n - completed, available());
+        std::copy(_buf.get(), _buf.get() + now, out.get_write() + completed);
+        _buf.trim_front(now);
+        completed += now;
+    }
+    if (completed == n) {
+        return make_ready_future<tmp_buf>(std::move(out));
+    }
+
+    // _buf is now empty
+    return _fd.get().then([this, n, out = std::move(out), completed] (auto buf) mutable {
+        if (buf.size() == 0) {
+            _eof = true;
+            return make_ready_future<tmp_buf>(std::move(buf));
+        }
+        _buf = std::move(buf);
+        return this->read_exactly_part(n, std::move(out), completed);
+    });
+}
+
+template <typename CharType>
+future<temporary_buffer<CharType>>
+input_stream<CharType>::read_exactly(size_t n) {
+    if (_buf.size() == n) {
+        // easy case: steal buffer, return to caller
+        return make_ready_future<tmp_buf>(std::move(_buf));
+    } else if (_buf.size() > n) {
+        // buffer large enough, share it with caller
+        auto front = _buf.share(0, n);
+        _buf.trim_front(n);
+        return make_ready_future<tmp_buf>(std::move(front));
+    } else if (_buf.size() == 0) {
+        // buffer is empty: grab one and retry
+        return _fd.get().then([this, n] (auto buf) mutable {
+            if (buf.size() == 0) {
+                _eof = true;
+                return make_ready_future<tmp_buf>(std::move(buf));
+            }
+            _buf = std::move(buf);
+            return this->read_exactly(n);
+        });
+    } else {
+        // buffer too small: start copy/read loop
+        tmp_buf b(n);
+        return read_exactly_part(n, std::move(b), 0);
+    }
+}
+
+template <typename CharType>
+template <typename Consumer>
+future<>
+input_stream<CharType>::consume(Consumer& consumer) {
+    return repeat([&consumer, this] {
+        if (_buf.empty() && !_eof) {
+            return _fd.get().then([this] (tmp_buf buf) {
+                _buf = std::move(buf);
+                _eof = _buf.empty();
+                return make_ready_future<stop_iteration>(stop_iteration::no);
+            });
+        }
+        future<unconsumed_remainder> unconsumed = consumer(std::move(_buf));
+        if (unconsumed.available()) {
+            unconsumed_remainder u = std::get<0>(unconsumed.get());
+            if (u) {
+                // consumer is done
+                _buf = std::move(u.value());
+                return make_ready_future<stop_iteration>(stop_iteration::yes);
+            }
+            if (_eof) {
+                return make_ready_future<stop_iteration>(stop_iteration::yes);
+            }
+            // If we're here, consumer consumed entire buffer and is ready for
+            // more now. So we do not return, and rather continue the loop.
+            // TODO: if we did too many iterations, schedule a call to
+            // consume() instead of continuing the loop.
+            return make_ready_future<stop_iteration>(stop_iteration::no);
+        } else {
+            // TODO: here we wait for the consumer to finish the previous
+            // buffer (fulfilling "unconsumed") before starting to read the
+            // next one. Consider reading ahead.
+            return unconsumed.then([this] (unconsumed_remainder u) {
+                if (u) {
+                    // consumer is done
+                    _buf = std::move(u.value());
+                    return make_ready_future<stop_iteration>(stop_iteration::yes);
+                } else {
+                    // consumer consumed entire buffer, and is ready for more
+                    return make_ready_future<stop_iteration>(stop_iteration::no);
+                }
+            });
+        }
+    });
+}
+
+template <typename CharType>
+future<temporary_buffer<CharType>>
+input_stream<CharType>::read_up_to(size_t n) {
+    using tmp_buf = temporary_buffer<CharType>;
+    if (_buf.empty()) {
+        if (_eof) {
+            return make_ready_future<tmp_buf>();
+        } else {
+            return _fd.get().then([this, n] (tmp_buf buf) {
+                _eof = buf.empty();
+                _buf = std::move(buf);
+                return read_up_to(n);
+            });
+        }
+    } else if (_buf.size() <= n) {
+        // easy case: steal buffer, return to caller
+        return make_ready_future<tmp_buf>(std::move(_buf));
+    } else {
+        // buffer is larger than n, so share its head with a caller
+        auto front = _buf.share(0, n);
+        _buf.trim_front(n);
+        return make_ready_future<tmp_buf>(std::move(front));
+    }
+}
+
+template <typename CharType>
+future<temporary_buffer<CharType>>
+input_stream<CharType>::read() {
+    using tmp_buf = temporary_buffer<CharType>;
+    if (_eof) {
+        return make_ready_future<tmp_buf>();
+    }
+    if (_buf.empty()) {
+        return _fd.get().then([this] (tmp_buf buf) {
+            _eof = buf.empty();
+            return make_ready_future<tmp_buf>(std::move(buf));
+        });
+    } else {
+        return make_ready_future<tmp_buf>(std::move(_buf));
+    }
+}
+
+template <typename CharType>
+future<>
+input_stream<CharType>::skip(uint64_t n) {
+    auto skip_buf = std::min(n, _buf.size());
+    _buf.trim_front(skip_buf);
+    n -= skip_buf;
+    if (!n) {
+        return make_ready_future<>();
+    }
+    return _fd.skip(n).then([this] (temporary_buffer<CharType> buffer) {
+        _buf = std::move(buffer);
+    });
+}
+
+// Writes @buf in chunks of _size length. The last chunk is buffered if smaller.
+template <typename CharType>
+future<>
+output_stream<CharType>::split_and_put(temporary_buffer<CharType> buf) {
+    assert(_end == 0);
+
+    return repeat([this, buf = std::move(buf)] () mutable {
+        if (buf.size() < _size) {
+            if (!_buf) {
+                _buf = _fd.allocate_buffer(_size);
+            }
+            std::copy(buf.get(), buf.get() + buf.size(), _buf.get_write());
+            _end = buf.size();
+            return make_ready_future<stop_iteration>(stop_iteration::yes);
+        }
+        auto chunk = buf.share(0, _size);
+        buf.trim_front(_size);
+        return put(std::move(chunk)).then([] {
+            return stop_iteration::no;
+        });
+    });
+}
+
+template <typename CharType>
+future<>
+output_stream<CharType>::write(const char_type* buf, size_t n) {
+    assert(!_zc_bufs && "Mixing buffered writes and zero-copy writes not supported yet");
+    auto bulk_threshold = _end ? (2 * _size - _end) : _size;
+    if (n >= bulk_threshold) {
+        if (_end) {
+            auto now = _size - _end;
+            std::copy(buf, buf + now, _buf.get_write() + _end);
+            _end = _size;
+            temporary_buffer<char> tmp = _fd.allocate_buffer(n - now);
+            std::copy(buf + now, buf + n, tmp.get_write());
+            _buf.trim(_end);
+            _end = 0;
+            return put(std::move(_buf)).then([this, tmp = std::move(tmp)]() mutable {
+                if (_trim_to_size) {
+                    return split_and_put(std::move(tmp));
+                } else {
+                    return put(std::move(tmp));
+                }
+            });
+        } else {
+            temporary_buffer<char> tmp = _fd.allocate_buffer(n);
+            std::copy(buf, buf + n, tmp.get_write());
+            if (_trim_to_size) {
+                return split_and_put(std::move(tmp));
+            } else {
+                return put(std::move(tmp));
+            }
+        }
+    }
+
+    if (!_buf) {
+        _buf = _fd.allocate_buffer(_size);
+    }
+
+    auto now = std::min(n, _size - _end);
+    std::copy(buf, buf + now, _buf.get_write() + _end);
+    _end += now;
+    if (now == n) {
+        return make_ready_future<>();
+    } else {
+        temporary_buffer<char> next = _fd.allocate_buffer(_size);
+        std::copy(buf + now, buf + n, next.get_write());
+        _end = n - now;
+        std::swap(next, _buf);
+        return put(std::move(next));
+    }
+}
+
+template <typename CharType>
+future<>
+output_stream<CharType>::flush() {
+    if (!_batch_flushes) {
+        if (_end) {
+            _buf.trim(_end);
+            _end = 0;
+            return put(std::move(_buf)).then([this] {
+                return _fd.flush();
+            });
+        } else if (_zc_bufs) {
+            return zero_copy_put(std::move(_zc_bufs)).then([this] {
+                return _fd.flush();
+            });
+        }
+    } else {
+        if (_ex) {
+            // flush is a good time to deliver outstanding errors
+            return make_exception_future<>(std::move(_ex));
+        } else {
+            _flush = true;
+            if (!_in_batch) {
+                add_to_flush_poller(this);
+                _in_batch = promise<>();
+            }
+        }
+    }
+    return make_ready_future<>();
+}
+
+void add_to_flush_poller(output_stream<char>* x);
+
+template <typename CharType>
+future<>
+output_stream<CharType>::put(temporary_buffer<CharType> buf) {
+    // if flush is scheduled, disable it, so it will not try to write in parallel
+    _flush = false;
+    if (_flushing) {
+        // flush in progress, wait for it to end before continuing
+        return _in_batch.value().get_future().then([this, buf = std::move(buf)] () mutable {
+            return _fd.put(std::move(buf));
+        });
+    } else {
+        return _fd.put(std::move(buf));
+    }
+}
+
+template <typename CharType>
+void output_stream<CharType>::poll_flush() {
+    if (!_flush) {
+        // flush was canceled, do nothing
+        _flushing = false;
+        _in_batch.value().set_value();
+        _in_batch = std::nullopt;
+        return;
+    }
+    auto f = make_ready_future();
+    _flush = false;
+    _flushing = true; // make whoever wants to write into the fd to wait for flush to complete
+
+    if (_end) {
+        // send whatever is in the buffer right now
+        _buf.trim(_end);
+        _end = 0;
+        f = _fd.put(std::move(_buf));
+    } else if(_zc_bufs) {
+        f = _fd.put(std::move(_zc_bufs));
+    }
+
+    f.then([this] {
+        return _fd.flush();
+    }).then_wrapped([this] (future<> f) {
+        try {
+            f.get();
+        } catch (...) {
+            _ex = std::current_exception();
+        }
+        // if flush() was called while flushing flush once more
+        poll_flush();
+    });
+}
+
+template <typename CharType>
+future<>
+output_stream<CharType>::close() {
+    return flush().finally([this] {
+        if (_in_batch) {
+            return _in_batch.value().get_future();
+        } else {
+            return make_ready_future();
+        }
+    }).then([this] {
+        // report final exception as close error
+        if (_ex) {
+            std::rethrow_exception(_ex);
+        }
+    }).finally([this] {
+        return _fd.close();
+    });
+}
+
+thread_pool::thread_pool(std::string name) : _worker_thread([this, name] { work(name); }), _notify(pthread_self()) {
+    engine()._signals.handle_signal(SIGUSR1, [this] { inter_thread_wq.complete(); });
+}
+
+void thread_pool::work(std::string name) {
+    pthread_setname_np(pthread_self(), name.c_str());
+    sigset_t mask;
+    sigfillset(&mask);
+    auto r = ::pthread_sigmask(SIG_BLOCK, &mask, NULL);
+    throw_pthread_error(r);
+    std::array<syscall_work_queue::work_item*, syscall_work_queue::queue_length> tmp_buf;
+    while (true) {
+        uint64_t count;
+        auto r = ::read(inter_thread_wq._start_eventfd.get_read_fd(), &count, sizeof(count));
+        assert(r == sizeof(count));
+        if (_stopped.load(std::memory_order_relaxed)) {
+            break;
+        }
+        auto end = tmp_buf.data();
+        inter_thread_wq._pending.consume_all([&] (syscall_work_queue::work_item* wi) {
+            *end++ = wi;
+        });
+        for (auto p = tmp_buf.data(); p != end; ++p) {
+            auto wi = *p;
+            wi->process();
+            inter_thread_wq._completed.push(wi);
+        }
+        if (_main_thread_idle.load(std::memory_order_seq_cst)) {
+            pthread_kill(_notify, SIGUSR1);
+        }
+    }
+}
+
+thread_pool::~thread_pool() {
+    _stopped.store(true, std::memory_order_relaxed);
+    inter_thread_wq._start_eventfd.signal(1);
+    _worker_thread.join();
+}
 
 
-// static std::string get_hostname() {
-//     char hostname[PATH_MAX];
-//     gethostname(hostname, sizeof(hostname));
-//     hostname[PATH_MAX-1] = '\0';
-//     return hostname;
-// }
 
 
-// boost::program_options::options_description get_options_description() {
-//     namespace bpo = boost::program_options;
-//     bpo::options_description opts("Metrics options");
-//     opts.add_options()(
-//             "metrics-hostname",
-//             bpo::value<std::string>()->default_value(get_hostname()),
-//             "set the hostname used by the metrics, if not set, the local hostname will be used");
-//     return opts;
-// }
-
-// future<> configure(const boost::program_options::variables_map & opts) {
-//     impl::config c;
-//     c.hostname = opts["metrics-hostname"].as<std::string>();
-//     return smp::invoke_on_all([c] {
-//         impl::get_local_impl()->set_config(c);
-//     });
-// }
 
 
-// bool label_instance::operator!=(const label_instance& id2) const {
-//     auto& id1 = *this;
-//     return !(id1 == id2);
-// }
-
-// label shard_label("shard");
-// label type_label("type");
-// namespace impl {
-
-// registered_metric::registered_metric(metric_id id, data_type type, metric_function f, description d, bool enabled) :
-//         _type(type), _d(d), _enabled(enabled), _f(f), _impl(get_local_impl()), _id(id) {
-// }
-
-// metric_value metric_value::operator+(const metric_value& c) {
-//     metric_value res(*this);
-//     switch (_type) {
-//     case data_type::HISTOGRAM:
-//         boost::get<histogram>(res.u) += boost::get<histogram>(c.u);
-//     default:
-//         boost::get<double>(res.u) += boost::get<double>(c.u);
-//         break;
-//     }
-//     return res;
-// }
-
-// metric_definition_impl::metric_definition_impl(
-//         metric_name_type name,
-//         metric_type type,
-//         metric_function f,
-//         description d,
-//         std::vector<label_instance> _labels)
-//         : name(name), type(type), f(f)
-//         , d(d), enabled(true) {
-//     for (auto i: _labels) {
-//         labels[i.key()] = i.value();
-//     }
-//     if (labels.find(shard_label.name()) == labels.end()) {
-//         labels[shard_label.name()] = shard();
-//     }
-//     if (labels.find(type_label.name()) == labels.end()) {
-//         labels[type_label.name()] = type.type_name;
-//     }
-// }
-
-// metric_definition_impl& metric_definition_impl::operator ()(bool _enabled) {
-//     enabled = _enabled;
-//     return *this;
-// }
-
-// metric_definition_impl& metric_definition_impl::operator ()(const label_instance& label) {
-//     labels[label.key()] = label.value();
-//     return *this;
-// }
-
-// std::unique_ptr<metric_groups_def> create_metric_groups() {
-//     return  std::make_unique<metric_groups_impl>();
-// }
-
-// metric_groups_impl::~metric_groups_impl() {
-//     for (auto i : _registration) {
-//         unregister_metric(i);
-//     }
-// }
-
-// metric_groups_impl& metric_groups_impl::add_metric(group_name_type name, const metric_definition& md)  {
-
-//     metric_id id(name, md._impl->name, md._impl->labels);
-
-//     shared_ptr<registered_metric> rm =
-//             ::make_shared<registered_metric>(id, md._impl->type.base_type, md._impl->f, md._impl->d, md._impl->enabled);
-
-//     get_local_impl()->add_registration(id, rm);
-
-//     _registration.push_back(id);
-//     return *this;
-// }
-
-// metric_groups_impl& metric_groups_impl::add_group(group_name_type name, const std::vector<metric_definition>& l) {
-//     for (auto i = l.begin(); i != l.end(); ++i) {
-//         add_metric(name, *(i->_impl.get()));
-//     }
-//     return *this;
-// }
-
-// metric_groups_impl& metric_groups_impl::add_group(group_name_type name, const std::initializer_list<metric_definition>& l) {
-//     for (auto i = l.begin(); i != l.end(); ++i) {
-//         add_metric(name, *i);
-//     }
-//     return *this;
-// }
-
-// bool metric_id::operator<(
-//         const metric_id& id2) const {
-//     return as_tuple() < id2.as_tuple();
-// }
-
-// static std::string safe_name(const std::string& name) {
-//     auto rep = boost::replace_all_copy(boost::replace_all_copy(name, "-", "_"), " ", "_");
-//     boost::remove_erase_if(rep, boost::is_any_of("+()"));
-//     return rep;
-// }
-
-// std::string metric_id::full_name() const {
-//     return safe_name(_group + "_" + _name);
-// }
-
-// bool metric_id::operator==(
-//         const metric_id & id2) const {
-//     return as_tuple() == id2.as_tuple();
-// }
-
-// // Unfortunately, metrics_impl can not be shared because it
-// // need to be available before the first users (reactor) will call it
-
-// shared_ptr<impl>  get_local_impl() {
-//     static thread_local auto the_impl = make_shared<impl>();
-//     return the_impl;
-// }
-
-// void unregister_metric(const metric_id & id) {
-//     shared_ptr<impl> map = get_local_impl();
-//     auto i = map->get_value_map().find(id.full_name());
-//     if (i != map->get_value_map().end()) {
-//         auto j = i->second.find(id.labels());
-//         if (j != i->second.end()) {
-//             j->second = nullptr;
-//             i->second.erase(j);
-//         }
-//         if (i->second.empty()) {
-//             map->get_value_map().erase(i);
-//         }
-//     }
-// }
-
-// const value_map& get_value_map() {
-//     return get_local_impl()->get_value_map();
-// }
-
-// values_copy get_values() {
-//     values_copy res;
-
-//     for (auto i : get_local_impl()->get_value_map()) {
-//         std::vector<std::tuple<shared_ptr<registered_metric>, metric_value>> values;
-//         for (auto&& v : i.second) {
-//             if (v.second.get() && v.second->is_enabled()) {
-//                 values.emplace_back(v.second, (*(v.second))());
-//             }
-//         }
-//         if (values.size() > 0) {
-//             res[i.first] = std::move(values);
-//         }
-//     }
-//     return std::move(res);
-// }
 
 
-// instance_id_type shard() {
-//     if (engine_is_ready()) {
-//         return std::to_string(engine().cpu_id());
-//     }
-//     return std::string("0");
-// }
-
-// void impl::add_registration(const metric_id& id, shared_ptr<registered_metric> rm) {
-//     std::string name = id.full_name();
-//     if (_value_map.find(name) != _value_map.end()) {
-//         auto& metric = _value_map[name];
-//         if (metric.find(id.labels()) != metric.end()) {
-//             throw std::runtime_error("registering metrics twice for metrics: " + name);
-//         }
-//         if (metric.begin()->second->get_type() != rm->get_type()) {
-//             throw std::runtime_error("registering metrics " + name + " registered with different type.");
-//         }
-//         metric[id.labels()] = rm;
-//     } else {
-//         _value_map[name].info().type = rm->get_type();
-//         _value_map[name][id.labels()] = rm;
-//     }
-// }
-
-// }
-
-// const bool metric_disabled = false;
-
-// histogram& histogram::operator+=(const histogram& c) {
-//     for (size_t i = 0; i < c.buckets.size(); i++) {
-//         if (buckets.size() <= i) {
-//             buckets.push_back(c.buckets[i]);
-//         } else {
-//             if (buckets[i].upper_bound != c.buckets[i].upper_bound) {
-//                 throw std::out_of_range("Trying to add histogram with different bucket limits");
-//             }
-//             buckets[i].count += c.buckets[i].count;
-//         }
-//     }
-//     return *this;
-// }
-
-// histogram histogram::operator+(const histogram& c) const {
-//     histogram res = *this;
-//     res += c;
-//     return res;
-// }
-
-// histogram histogram::operator+(histogram&& c) const {
-//     c += *this;
-//     return std::move(c);
-// }
-
-// }

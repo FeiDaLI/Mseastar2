@@ -38,7 +38,7 @@ int tests, fails;
 future<> report(std::string msg, future<bool>&& result) {
     std::cout<<"开始执行report函数"<<std::endl;
     return std::move(result).then([msg] (bool result) {
-        printf("%s: %s\n", (result ? "PASS" : "FAIL"), msg);
+        // printf("%s: %s\n", (result ? "PASS" : "FAIL"), msg);
         tests += 1;
         fails += !result;
     });
