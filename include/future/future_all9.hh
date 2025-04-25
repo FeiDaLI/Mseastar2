@@ -6401,6 +6401,10 @@ struct reactor {
         void do_register();
         friend class reactor;
     };
+    enum class idle_cpu_handler_result {
+        no_more_work,
+        interrupted_by_higher_priority_task
+    };
 /*---------构造函数和析构函数----------------*/
     // reactor();
     reactor(unsigned int id);
@@ -6459,6 +6463,7 @@ struct reactor {
     std::atomic<uint64_t> _polls = { 0 };
     std::atomic<unsigned> _tasks_processed_stalled = { 0 };
     std::deque<std::unique_ptr<task>> _pending_tasks;
+    std::deque<std::unique_ptr<task>> _at_destroy_tasks;
     void run_tasks(std::deque<std::unique_ptr<task>>& tasks);
     std::vector<std::function<future<> ()>> _exit_funcs;//为什么不用引用?
     void add_task(std::unique_ptr<task>&& t) { _pending_tasks.push_back(std::move(t)); }
@@ -6468,6 +6473,7 @@ struct reactor {
             // break .then() chains
             g_need_preempt = true;
     }
+    void sleep();
     void force_poll() {
         g_need_preempt = true;
     }
@@ -6479,8 +6485,11 @@ struct reactor {
     static constexpr size_t max_aio = 128;
     semaphore _cpu_started;
     promise<> _start_promise;
-    future<> when_started() { return _start_promise.get_future(); }
-    /*----------------全局--------------*/
+    future<> when_started() { 
+        //为什么不执行这里？
+        std::cout <<this->_id<<"when_started" << std::endl;
+        return _start_promise.get_future(); }
+    /*---------- 全局--------------*/
     int run();
     /*----------配置相关----------------*/
     static boost::program_options::options_description get_options_description();
@@ -6498,6 +6507,9 @@ struct reactor {
     unsigned _max_task_backlog = 1000;
     std::chrono::nanoseconds _max_poll_time = calculate_poll_time();
     bool _strict_o_direct = true;
+    using work_waiting_on_reactor = const std::function<bool()>&;
+    using idle_cpu_handler = std::function<idle_cpu_handler_result(work_waiting_on_reactor)>;
+    idle_cpu_handler _idle_cpu_handler{ [] (work_waiting_on_reactor) {return idle_cpu_handler_result::no_more_work;} };
     /*----------------------poller相关----------------------------------------------------*/
     std::vector<pollfn*> _pollers;
     thread_pool _thread_pool;
@@ -9877,6 +9889,12 @@ reactor::poll_once() {
     return work;
 }
 
+template <typename Integral>
+inline Integral increment_nonatomically(std::atomic<Integral>& value) {
+    auto tmp = value.load(std::memory_order_relaxed);
+    value.store(tmp + 1, std::memory_order_relaxed);
+    return tmp;
+}
 
 int reactor::run(){
     auto signal_stack = install_signal_handler_stack();
@@ -9965,12 +9983,66 @@ int reactor::run(){
 
     while(true){
         run_tasks(_pending_tasks);
-         _signals.poll_signal();
-        // do_check_lowres_timers();
-        // do_expire_lowres_timers();
-        // std::this_thread::sleep_for(100ms);
+        if (_stopped) {
+            load_timer.cancel();
+            // Final tasks may include sending the last response to cpu 0, so run them
+            while (!_pending_tasks.empty()) {
+                run_tasks(_pending_tasks);
+            }
+            while (!_at_destroy_tasks.empty()) {
+                run_tasks(_at_destroy_tasks);
+            }
+            smp::arrive_at_event_loop_end();
+            if (_id == 0) {
+                smp::join_all();
+            }
+            break;
+        }
+
+        increment_nonatomically(_polls);
+
+        if (check_for_work()) {
+            if (idle) {
+                _total_idle += idle_end - idle_start;
+                idle_start = idle_end;
+                idle = false;
+            }
+        } else {
+            idle_end = steady_clock_type::now();
+            if (!idle) {
+                idle_start = idle_end;
+                idle = true;
+            }
+            bool go_to_sleep = true;
+            try {
+                // we can't run check_for_work(), because that can run tasks in the context
+                // of the idle handler which change its state, without the idle handler expecting
+                // it.  So run pure_check_for_work() instead.
+                auto handler_result = _idle_cpu_handler(pure_check_for_work);
+                go_to_sleep = handler_result == idle_cpu_handler_result::no_more_work;
+            } catch (...) {
+                throw std::runtime_error("idle_cpu_handler() threw exception");
+            }
+            if (go_to_sleep) {
+                _mm_pause();
+                if (idle_end - idle_start > _max_poll_time) {
+                    // Turn off the task quota timer to avoid spurious wakeiups
+                    struct itimerspec zero_itimerspec = {};
+                    _task_quota_timer.timerfd_settime(0, zero_itimerspec);
+                    sleep();
+                    // We may have slept for a while, so freshen idle_end
+                    idle_end = steady_clock_type::now();
+                    _task_quota_timer.timerfd_settime(0, task_quote_itimerspec);
+                }
+            } else {
+                // We previously ran pure_check_for_work(), might not actually have performed
+                // any work.
+                check_for_work();
+            }
+        }
     }
-    return 0;
+    my_io_queue.reset(nullptr);
+    return _return;
 }
 
 
@@ -12673,4 +12745,20 @@ alignas(64) reactor::smp_pollfn::aligned_flag reactor::smp_pollfn::_membarrier_l
 inline
 pollable_fd_state::~pollable_fd_state() {
     engine().forget(*this);
+}
+void
+reactor::sleep() {
+    for (auto i = _pollers.begin(); i != _pollers.end(); ++i) {
+        auto ok = (*i)->try_enter_interrupt_mode();
+        if (!ok) {
+            while (i != _pollers.begin()) {
+                (*--i)->exit_interrupt_mode();
+            }
+            return;
+        }
+    }
+    wait_and_process(-1, &_active_sigmask);
+    for (auto i = _pollers.rbegin(); i != _pollers.rend(); ++i) {
+        (*i)->exit_interrupt_mode();
+    }
 }
