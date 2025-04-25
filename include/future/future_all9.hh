@@ -6552,9 +6552,6 @@ struct reactor {
     future<> remove_file(std::string pathname);
     future<> rename_file(std::string old_pathname, std::string new_pathname);
     future<> link_file(std::string oldpath, std::string newpath);
-    future<> writeable(pollable_fd_state& fd) {
-        return _backend.writeable(fd);
-    }
     // In the following three methods, prepare_io is not guaranteed to execute in the same processor
     // in which it was generated. Therefore, care must be taken to avoid the use of objects that could
     // be destroyed within or at exit of prepare_io.
@@ -6616,6 +6613,7 @@ reactor::pure_poll_once() {
     }
     return false;
 }
+
 
 bool reactor::flush_pending_aio() {
     bool did_work = false;
@@ -6692,12 +6690,6 @@ void reactor::unregister_poller(pollfn* p) {
 }
 
 
-void
-reactor::start_epoll() {
-    if (!_epoll_poller) {
-        _epoll_poller = poller(std::make_unique<epoll_pollfn>(*this));
-    }
-}
 
 bool
 reactor::flush_tcp_batches() {
@@ -6709,7 +6701,6 @@ reactor::flush_tcp_batches() {
     }
     return work;
 }
-
 
 
 class reactor::poller::registration_task : public task {
@@ -6733,7 +6724,21 @@ public:
 
 
 
+reactor::poller::poller(poller&& x)
+        : _pollfn(std::move(x._pollfn)), _registration_task(x._registration_task) {
+    if (_pollfn && _registration_task) {
+        _registration_task->moved(this);
+    }
+}
 
+reactor::poller&
+reactor::poller::operator=(poller&& x) {
+    if (this != &x) {
+        this->~poller();
+        new (this) poller(std::move(x));
+    }
+    return *this;
+}
 reactor_backend_epoll::reactor_backend_epoll()
     : _epollfd(file_desc::epoll_create(EPOLL_CLOEXEC)) {
 }
@@ -12605,3 +12610,9 @@ thread_pool::~thread_pool() {
 
 
 
+void
+reactor::start_epoll() {
+    if (!_epoll_poller) {
+        _epoll_poller = poller(std::make_unique<epoll_pollfn>(*this));
+    }
+}
