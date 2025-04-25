@@ -1,3 +1,8 @@
+g++ -Wall -std=c++20 -g -Iinclude -pthread -MMD -c include/resource/resource.cc -o build/include/resource/resource.o
+include/resource/resource.cc: In function ‘resource::io_queue_topology resource::allocate_io_queues(hwloc_topology*&, resource::configuration, std::vector<resource::cpu>)’:
+include/resource/resource.cc:191:138: warning: right operand of comma operator has no effect [-Wunused-value]
+  191 |         std::cout<<"Warning: number of IO queues (%d) greater than logical cores (%d). Adjusting downwards.\n", num_io_queues, cpus.size();
+      |                                                                                                                                          ^
 g++ -Wall -std=c++20 -g -Iinclude -pthread -MMD -c test/new_tests/smp_test.cc -o build/test/new_tests/smp_test.o
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
@@ -30,15 +35,9 @@ include/../include/app/../future/future_all9.hh:6573:14: error: ‘future<> reac
 include/../include/app/../future/future_all9.hh:6555:14: note: previous declaration ‘future<> reactor::writeable(pollable_fd_state&)’
  6555 |     future<> writeable(pollable_fd_state& fd) {
       |              ^~~~~~~~~
-include/../include/app/../future/future_all9.hh:6588:10: error: ‘void reactor::enable_timer(std::chrono::_V2::steady_clock::time_point)’ cannot be overloaded with ‘void reactor::enable_timer(std::chrono::_V2::steady_clock::time_point)’
- 6588 |     void enable_timer(steady_clock_type::time_point when);
-      |          ^~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:6440:10: note: previous declaration ‘void reactor::enable_timer(std::chrono::_V2::steady_clock::time_point)’
- 6440 |     void enable_timer(steady_clock_type::time_point when);
-      |          ^~~~~~~~~~~~
 include/../include/app/../future/future_all9.hh: In member function ‘void reactor::start_epoll()’:
-include/../include/app/../future/future_all9.hh:6699:69: error: no matching function for call to ‘reactor::poller::poller(std::_MakeUniq<reactor::epoll_pollfn>::__single_object)’
- 6699 |         _epoll_poller = poller(std::make_unique<epoll_pollfn>(*this));
+include/../include/app/../future/future_all9.hh:6698:69: error: no matching function for call to ‘reactor::poller::poller(std::_MakeUniq<reactor::epoll_pollfn>::__single_object)’
+ 6698 |         _epoll_poller = poller(std::make_unique<epoll_pollfn>(*this));
       |                                                                     ^
 include/../include/app/../future/future_all9.hh:6399:9: note: candidate: ‘reactor::poller::poller(reactor::poller&&)’
  6399 |         poller(poller&& x);
@@ -53,32 +52,29 @@ include/../include/app/../future/future_all9.hh:6394:40: note:   no known conver
  6394 |         poller(std::unique_ptr<pollfn> fn)
       |                ~~~~~~~~~~~~~~~~~~~~~~~~^~
 include/../include/app/../future/future_all9.hh: In member function ‘void reactor::start_aio_eventfd_loop()’:
-include/../include/app/../future/future_all9.hh:7828:26: error: ‘repeat’ was not declared in this scope
- 7828 |     future<> loop_done = repeat([this] {
+include/../include/app/../future/future_all9.hh:7827:26: error: ‘repeat’ was not declared in this scope
+ 7827 |     future<> loop_done = repeat([this] {
       |                          ^~~~~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
 include/../include/app/../future/future_all9.hh: In member function ‘void reactor::enable_timer(std::chrono::_V2::steady_clock::time_point)’:
-include/../include/app/../future/future_all9.hh:9095:10: warning: unused variable ‘ret’ [-Wunused-variable]
- 9095 |     auto ret = timer_settime(_steady_clock_timer, TIMER_ABSTIME, &its, NULL);
+include/../include/app/../future/future_all9.hh:9094:10: warning: unused variable ‘ret’ [-Wunused-variable]
+ 9094 |     auto ret = timer_settime(_steady_clock_timer, TIMER_ABSTIME, &its, NULL);
       |          ^~~
 include/../include/app/../future/future_all9.hh: In member function ‘void thread_context::setup()’:
-include/../include/app/../future/future_all9.hh:9699:10: warning: unused variable ‘r’ [-Wunused-variable]
- 9699 |     auto r = getcontext(&initial_context);//保存当前上下文到initial_context中.
+include/../include/app/../future/future_all9.hh:9698:10: warning: unused variable ‘r’ [-Wunused-variable]
+ 9698 |     auto r = getcontext(&initial_context);//保存当前上下文到initial_context中.
       |          ^
 include/../include/app/../future/future_all9.hh: In member function ‘int reactor::run()’:
-include/../include/app/../future/future_all9.hh:10002:46: error: cannot convert ‘void (reactor::*)(int)’ to ‘__sighandler_t’ {aka ‘void (*)(int)’} in assignment
-10002 |     sa_block_notifier.sa_handler = &reactor::block_notifier;
-      |                                              ^~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:10000:11: warning: unused variable ‘task_quote_itimerspec’ [-Wunused-variable]
-10000 |     auto& task_quote_itimerspec = its;
+include/../include/app/../future/future_all9.hh:9999:11: warning: unused variable ‘task_quote_itimerspec’ [-Wunused-variable]
+ 9999 |     auto& task_quote_itimerspec = its;
       |           ^~~~~~~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:10006:10: warning: unused variable ‘idle’ [-Wunused-variable]
-10006 |     bool idle = false;
+include/../include/app/../future/future_all9.hh:10005:10: warning: unused variable ‘idle’ [-Wunused-variable]
+10005 |     bool idle = false;
       |          ^~~~
 include/../include/app/../future/future_all9.hh: In member function ‘future<> reactor::run_exit_tasks()’:
-include/../include/app/../future/future_all9.hh:10097:1: warning: no return statement in function returning non-void [-Wreturn-type]
-10097 | }
+include/../include/app/../future/future_all9.hh:10096:1: warning: no return statement in function returning non-void [-Wreturn-type]
+10096 | }
       | ^
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
@@ -91,53 +87,38 @@ include/../include/app/../future/future_all9.hh:6478:15: warning:   ‘semaphore
       |               ^~~~~~~~~~~~~~~~~~~~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:10101:1: warning:   when initialized here [-Wreorder]
-10101 | reactor::reactor(unsigned id)
+include/../include/app/../future/future_all9.hh:10098:1: warning:   when initialized here [-Wreorder]
+10098 | reactor::reactor(unsigned id)
       | ^~~~~~~
-include/../include/app/../future/future_all9.hh:10105:73: error: use of deleted function ‘file_desc::file_desc()’
-10105 |     , _io_context_available(max_aio),_reuseport(posix_reuseport_detect()){
-      |                                                                         ^
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:4205:5: note: declared here
- 4205 |     file_desc() = delete;
-      |     ^~~~~~~~~
+include/../include/app/../future/future_all9.hh:6604:16: warning: ‘reactor::_reuseport’ will be initialized after [-Wreorder]
+ 6604 |     const bool _reuseport;
+      |                ^~~~~~~~~~
+include/../include/app/../future/future_all9.hh:6427:15: warning:   ‘file_desc reactor::_task_quota_timer’ [-Wreorder]
+ 6427 |     file_desc _task_quota_timer;
+      |               ^~~~~~~~~~~~~~~~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:10105:73: error: no matching function for call to ‘thread_pool::thread_pool()’
-10105 |     , _io_context_available(max_aio),_reuseport(posix_reuseport_detect()){
-      |                                                                         ^
+include/../include/app/../future/future_all9.hh:10098:1: warning:   when initialized here [-Wreorder]
+10098 | reactor::reactor(unsigned id)
+      | ^~~~~~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh:6283:14: note: candidate: ‘thread_pool::thread_pool(std::string)’
- 6283 |     explicit thread_pool(std::string thread_name);
-      |              ^~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:6283:14: note:   candidate expects 1 argument, 0 provided
 include/../include/app/../future/future_all9.hh: In instantiation of ‘void install_oneshot_signal_handler() [with int Signal = 11; void (* Func)() = sigsegv_action]’:
-include/../include/app/../future/future_all9.hh:10268:61:   required from here
-include/../include/app/../future/future_all9.hh:7316:10: warning: unused variable ‘r’ [-Wunused-variable]
- 7316 |     auto r = ::sigaction(Signal, &sa, nullptr);
+include/../include/app/../future/future_all9.hh:10267:61:   required from here
+include/../include/app/../future/future_all9.hh:7315:10: warning: unused variable ‘r’ [-Wunused-variable]
+ 7315 |     auto r = ::sigaction(Signal, &sa, nullptr);
       |          ^
 include/../include/app/../future/future_all9.hh: In instantiation of ‘void install_oneshot_signal_handler() [with int Signal = 6; void (* Func)() = sigabrt_action]’:
-include/../include/app/../future/future_all9.hh:10269:61:   required from here
-include/../include/app/../future/future_all9.hh:7316:10: warning: unused variable ‘r’ [-Wunused-variable]
-In file included from include/../include/app/app-template.hh:27,
-                 from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all9.hh: In instantiation of ‘repeat_until_value_return_type<AsyncAction> repeat_until_value(AsyncAction&&) [with AsyncAction = data_source_impl::skip(uint64_t)::<lambda(uint64_t&)>::<lambda()>; repeat_until_value_return_type<AsyncAction> = future<temporary_buffer<char> >]’:
-include/../include/app/../future/future_all9.hh:12137:10:   required from here
-include/../include/app/../future/future_all9.hh:8520:17: error: ‘schedule’ was not declared in this scope
- 8520 |         schedule(make_task([action = std::forward<AsyncAction>(action), p = std::move(p)] () mutable {
-      |         ~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- 8521 |             repeat_until_value(std::forward<AsyncAction>(action)).forward_to(std::move(p));
-      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- 8522 |         }));
-      |         ~~~      
+include/../include/app/../future/future_all9.hh:10268:61:   required from here
+include/../include/app/../future/future_all9.hh:7315:10: warning: unused variable ‘r’ [-Wunused-variable]
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
 include/../include/app/../future/future_all9.hh: At global scope:
-include/../include/app/../future/future_all9.hh:9834:18: warning: ‘always_inline’ function might not be inlinable [-Wattributes]
- 9834 | std::tuple<T...> future<T...>::get() {
+include/../include/app/../future/future_all9.hh:9833:18: warning: ‘always_inline’ function might not be inlinable [-Wattributes]
+ 9833 | std::tuple<T...> future<T...>::get() {
       |                  ^~~~~~~~~~~~
-include/../include/app/../future/future_all9.hh:9834:18: warning: ‘always_inline’ function might not be inlinable [-Wattributes]
+include/../include/app/../future/future_all9.hh:9833:18: warning: ‘always_inline’ function might not be inlinable [-Wattributes]
 makefile:178: recipe for target 'build/test/new_tests/smp_test.o' failed
 make: *** [build/test/new_tests/smp_test.o] Error 1

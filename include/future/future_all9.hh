@@ -5822,7 +5822,7 @@ struct directory_entry {
     /// Name of the file in a directory entry.  Will never be "." or "..".  Only the last component is included.
     sstring name;
     /// Type of the directory entry, if known.
-    std::optional<directory_entry_type> type;
+    std::optional<::directory_entry_type> type;
 };
 
 /// File open options
@@ -6425,8 +6425,8 @@ struct reactor {
     using lowres_timer = timer<lowres_clock>;
     using manual_timer = timer<manual_clock>;
     file_desc _task_quota_timer;
-    std::optional<pollable_fd> _aio_eventfd;
-    std::optional<poller> _epoll_poller;
+    std::optional<::pollable_fd> _aio_eventfd;
+    std::optional<reactor::poller> _epoll_poller;
 /*---------------------------------------------*/
     void add_timer(steady_timer* tmr);
     bool queue_timer(steady_timer* tmr);
@@ -6446,7 +6446,7 @@ struct reactor {
 /*---------------信号处理相关------------------------*/
     signals _signals;
     bool _handle_sigint = true;
-    void block_notifier(int); 
+    static void block_notifier(int); 
 /*----------任务相关-------------------*/
     bool _stopping = false;
     bool _stopped = false;
@@ -6585,7 +6585,6 @@ struct reactor {
     void abort_writer(pollable_fd_state& fd, std::exception_ptr ex) {
         return _backend.abort_writer(fd, std::move(ex));
     }
-    void enable_timer(steady_clock_type::time_point when);
     std::unique_ptr<reactor_notifier> make_reactor_notifier() {
         return _backend.make_reactor_notifier();
     }
@@ -8517,7 +8516,7 @@ repeat_until_value(AsyncAction&& action) {
     try {
         promise<value_type> p;
         auto f = p.get_future();
-        schedule(make_task([action = std::forward<AsyncAction>(action), p = std::move(p)] () mutable {
+        schedule_normal(make_task([action = std::forward<AsyncAction>(action), p = std::move(p)] () mutable {
             repeat_until_value(std::forward<AsyncAction>(action)).forward_to(std::move(p));
         }));
         return f;
@@ -10092,17 +10091,17 @@ future<> reactor::run_exit_tasks() {
     _stopping = true;
     // // stop_aio_eventfd_loop();
     // return do_for_each(_exit_funcs.rbegin(), _exit_funcs.rend(), [] (auto& func) {
-    //     return func();
+    //    return func();
     // });
 }
-
-
 
 reactor::reactor(unsigned id)
     : _id(id)
     , _cpu_started(0)
     , _io_context(0)
-    , _io_context_available(max_aio),_reuseport(posix_reuseport_detect()){
+    , _io_context_available(max_aio),_reuseport(posix_reuseport_detect()),_task_quota_timer(file_desc::timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC))
+    , _thread_pool("sys"+id)
+    {
     thread_impl::init();
     auto r = ::io_setup(max_aio, &_io_context);
     assert(r >= 0);
