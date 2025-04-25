@@ -50,9 +50,35 @@
 #include <sys/mman.h>
 #include "../util/align.hh"
 #include "../util/backtrace.hh"
-#include "../util/tuple_utils.hh"
 #include "../util/bool_class.hh"
 
+template <typename Func>
+class deferred_action {
+        Func _func;
+        bool _cancelled = false;
+    public:
+        static_assert(std::is_nothrow_move_constructible<Func>::value, "Func(Func&&) must be noexcept");
+        deferred_action(Func&& func) noexcept : _func(std::move(func)) {}
+        deferred_action(deferred_action&& o) noexcept : _func(std::move(o._func)), _cancelled(o._cancelled) {
+            o._cancelled = true;
+        }
+        deferred_action& operator=(deferred_action&& o) noexcept {
+            if (this != &o) {
+                this->~deferred_action();
+                new (this) deferred_action(std::move(o));
+            }
+            return *this;
+        }
+        deferred_action(const deferred_action&) = delete;
+        ~deferred_action() { if (!_cancelled) { _func(); }; }
+        void cancel() { _cancelled = true; }
+};
+
+template <typename Func> 
+deferred_action<Func>
+defer(Func&& func) {
+    return deferred_action<Func>(std::forward<Func>(func));
+}
 
 template<typename T>
 class reference_wrapper {
@@ -2876,6 +2902,157 @@ public:
 
 }
 
+
+
+/*----------------------------------tuple_utils-------------------------------------------------------*/
+
+
+
+#include <tuple>
+#include <utility>
+
+/// \cond internal
+namespace internal {
+
+template<typename Tuple>
+Tuple untuple(Tuple t) {
+    return std::move(t);
+}
+
+template<typename T>
+T untuple(std::tuple<T> t) {
+    return std::get<0>(std::move(t));
+}
+
+template<typename Tuple, typename Function, size_t... I>
+void tuple_for_each_helper(Tuple&& t, Function&& f, std::index_sequence<I...>&&) {
+    auto ignore_me = { (f(std::get<I>(std::forward<Tuple>(t))), 1)... };
+    (void)ignore_me;
+}
+
+template<typename Tuple, typename MapFunction, size_t... I>
+auto tuple_map_helper(Tuple&& t, MapFunction&& f, std::index_sequence<I...>&&) {
+    return std::make_tuple(f(std::get<I>(std::forward<Tuple>(t)))...);
+}
+
+template<size_t I, typename IndexSequence>
+struct prepend;
+
+template<size_t I, size_t... Is>
+struct prepend<I, std::index_sequence<Is...>> {
+    using type = std::index_sequence<I, Is...>;
+};
+
+template<template<typename> class Filter, typename Tuple, typename IndexSequence>
+struct tuple_filter;
+
+template<template<typename> class Filter, typename T, typename... Ts, size_t I, size_t... Is>
+struct tuple_filter<Filter, std::tuple<T, Ts...>, std::index_sequence<I, Is...>> {
+    using tail = typename tuple_filter<Filter, std::tuple<Ts...>, std::index_sequence<Is...>>::type;
+    using type = std::conditional_t<Filter<T>::value, typename prepend<I, tail>::type, tail>;
+};
+
+template<template<typename> class Filter>
+struct tuple_filter<Filter, std::tuple<>, std::index_sequence<>> {
+    using type = std::index_sequence<>;
+};
+template<typename Tuple, size_t... I>
+auto tuple_filter_helper(Tuple&& t, std::index_sequence<I...>&&) {
+    return std::make_tuple(std::get<I>(std::forward<Tuple>(t))...);
+}
+/// \addtogroup utilities
+/// @{
+
+/// Applies type transformation to all types in tuple
+///
+/// Member type `type` is set to a tuple type which is a result of applying
+/// transformation `MapClass<T>::type` to each element `T` of the input tuple
+/// type.
+///
+/// \tparam MapClass class template defining type transformation
+/// \tparam Tuple input tuple type
+template<template<typename> class MapClass, typename Tuple>
+struct tuple_map_types;
+
+/// @}
+
+template<template<typename> class MapClass, typename... Elements>
+struct tuple_map_types<MapClass, std::tuple<Elements...>> {
+    using type = std::tuple<typename MapClass<Elements>::type...>;
+};
+
+/// \addtogroup utilities
+/// @{
+
+/// Filters elements in tuple by their type
+///
+/// Returns a tuple containing only those elements which type `T` caused
+/// expression `FilterClass<T>::value` to be true.
+///
+/// \tparam FilterClass class template having an element value set to true for elements that
+///                     should be present in the result
+/// \param t tuple to filter
+/// \return a tuple contaning elements which type passed the test
+template<template<typename> class FilterClass, typename... Elements>
+auto tuple_filter_by_type(const std::tuple<Elements...>& t) {
+    using sequence = typename internal::tuple_filter<FilterClass, std::tuple<Elements...>,
+                                                     std::index_sequence_for<Elements...>>::type;
+    return internal::tuple_filter_helper(t, sequence());
+}
+template<template<typename> class FilterClass, typename... Elements>
+auto tuple_filter_by_type(std::tuple<Elements...>&& t) {
+    using sequence = typename internal::tuple_filter<FilterClass, std::tuple<Elements...>,
+                                                     std::index_sequence_for<Elements...>>::type;
+    return internal::tuple_filter_helper(std::move(t), sequence());
+}
+
+/// Applies function to all elements in tuple
+///
+/// Applies given function to all elements in the tuple and returns a tuple
+/// of results.
+///
+/// \param t original tuple
+/// \param f function to apply
+/// \return tuple of results returned by f for each element in t
+template<typename Function, typename... Elements>
+auto tuple_map(const std::tuple<Elements...>& t, Function&& f) {
+    return internal::tuple_map_helper(t, std::forward<Function>(f),
+                                      std::index_sequence_for<Elements...>());
+}
+template<typename Function, typename... Elements>
+auto tuple_map(std::tuple<Elements...>&& t, Function&& f) {
+    return internal::tuple_map_helper(std::move(t), std::forward<Function>(f),
+                                      std::index_sequence_for<Elements...>());
+}
+/// Iterate over all elements in tuple
+///
+/// Iterates over given tuple and calls the specified function for each of
+/// it elements.
+///
+/// \param t a tuple to iterate over
+/// \param f function to call for each tuple element
+template<typename Function, typename... Elements>
+void tuple_for_each(const std::tuple<Elements...>& t, Function&& f) {
+    return internal::tuple_for_each_helper(t, std::forward<Function>(f),
+                                           std::index_sequence_for<Elements...>());
+}
+template<typename Function, typename... Elements>
+void tuple_for_each(std::tuple<Elements...>& t, Function&& f) {
+    return internal::tuple_for_each_helper(t, std::forward<Function>(f),
+                                           std::index_sequence_for<Elements...>());
+}
+template<typename Function, typename... Elements>
+void tuple_for_each(std::tuple<Elements...>&& t, Function&& f) {
+    return internal::tuple_for_each_helper(std::move(t), std::forward<Function>(f),
+                                           std::index_sequence_for<Elements...>());
+}
+}
+
+/*--------------------------------------------------------------------------------------------------*/
+
+
+
+
 template<typename Function, typename ReturnType, typename ArgsTuple>
 GCC6_CONCEPT(requires std::is_nothrow_move_constructible<ArgsTuple>::value)
 class concrete_execution_stage final : public execution_stage {
@@ -2886,7 +3063,7 @@ class concrete_execution_stage final : public execution_stage {
 
     using return_type = futurize_t<ReturnType>;
     using promise_type = typename return_type::promise_type;
-    using input_type = typename tuple_map_types<internal::wrap_for_es, ArgsTuple>::type;
+    using input_type = typename internal::tuple_map_types<internal::wrap_for_es, ArgsTuple>::type;
 
     struct work_item {
         input_type _in;
@@ -2959,8 +3136,6 @@ template<typename Ret, typename Object, typename... Args>
 auto make_execution_stage(const sstring& name, Ret (Object::*fn)(Args...) const) {
     return concrete_execution_stage<decltype(std::mem_fn(fn)), Ret, std::tuple<const Object*, Args...>>(name, std::mem_fn(fn));
 }
-
-/// @}
 
 inline execution_stage::execution_stage(const sstring& name):_name(name){
     internal::execution_stage_manager::get().register_execution_stage(*this);
@@ -6300,8 +6475,6 @@ struct reactor {
     void exit(int ret);
     void stop();
     future<> run_exit_tasks();
-    template <typename Func>
-    future<io_event> submit_io(Func prepare_io);
     semaphore _io_context_available;
     static constexpr size_t max_aio = 128;
     semaphore _cpu_started;
@@ -8145,7 +8318,7 @@ thread_local std::list<thread_context*> thread_context::_all_threads;
 #include <iterator>
 #include <vector>
 #include <experimental/optional>
-#include "util/tuple_utils.hh"
+// #include "util/tuple_utils.hh"
 extern __thread size_t task_quota;
 struct parallel_for_each_state {
     // use optional<> to avoid out-of-line constructor
@@ -10462,7 +10635,7 @@ disable_abort_on_alloc_failure_temporarily::~disable_abort_on_alloc_failure_temp
 #include <sys/uio.h>  // For writev
 #include <boost/intrusive/list.hpp>
 #include <sys/mman.h>
-#include "../util/defer.hh"
+
 #include "../util/backtrace.hh"
 #include <unordered_set>
 #ifdef HAVE_NUMA
@@ -11855,23 +12028,23 @@ future<io_event> io_queue::queue_request(shard_id coordinator, const io_priority
 template <typename Func>
 future<io_event>
 reactor::submit_io(Func prepare_io) {
-    // return _io_context_available.wait(1).then([this, prepare_io = std::move(prepare_io)] () mutable {
-    //     auto pr = std::make_unique<promise<io_event>>();
-    //     iocb io;
-    //     prepare_io(io);
-    //     if (_aio_eventfd) {
-    //         io_set_eventfd(&io, _aio_eventfd->get_fd());
-    //     }
-    //     auto f = pr->get_future();
-    //     io.data = pr.get();
-    //     _pending_aio.push_back(io);
-    //     pr.release();
-    //     if ((_io_queue->queued_requests() > 0) ||
-    //         (_pending_aio.size() >= std::min(max_aio / 4, _io_queue->_capacity / 2))) {
-    //         flush_pending_aio();
-    //     }
-    //     return f;
-    // });
+    return _io_context_available.wait(1).then([this, prepare_io = std::move(prepare_io)] () mutable {
+        auto pr = std::make_unique<promise<io_event>>();
+        iocb io;
+        prepare_io(io);
+        if (_aio_eventfd) {
+            io_set_eventfd(&io, _aio_eventfd->get_fd());
+        }
+        auto f = pr->get_future();
+        io.data = pr.get();
+        _pending_aio.push_back(io);
+        pr.release();
+        if ((_io_queue->queued_requests() > 0) ||
+            (_pending_aio.size() >= std::min(max_aio / 4, _io_queue->_capacity / 2))) {
+            flush_pending_aio();
+        }
+        return f;
+    });
 }
 
 template <typename... T>
@@ -11953,7 +12126,7 @@ inline future<temporary_buffer<char>> data_source_impl::skip(uint64_t n)
 {
     return do_with(uint64_t(n), [this] (uint64_t& n) {
         return repeat_until_value([&] {
-            return get().then([&] (temporary_buffer<char> buffer) -> std::experimental::optional<temporary_buffer<char>> {
+            return get().then([&] (temporary_buffer<char> buffer) -> std::optional<temporary_buffer<char>> {
                 if (buffer.size() >= n) {
                     buffer.trim_front(n);
                     return std::move(buffer);
