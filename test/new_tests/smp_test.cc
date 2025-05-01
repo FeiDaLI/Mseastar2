@@ -11,7 +11,6 @@ future<bool> test_smp_call() {
 }
 
 struct nasty_exception {};
-
 future<bool> test_smp_exception() {
     printf("1\n");
     return smp::submit_to(1, [] {

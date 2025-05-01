@@ -24,7 +24,7 @@
 #include <boost/program_options.hpp>
 #include <boost/optional.hpp>
 #include <functional>
-#include "../future/future_all9.hh"
+#include "../future/future_all10.hh"
 #include <string>
 #include <boost/program_options.hpp>
 #include <boost/program_options.hpp>
@@ -175,8 +175,8 @@ int app_template::run_deprecated(int ac, char ** av, std::function<void ()>&& fu
         //     scollectd::configure(this->configuration());
         // });
         std::cout << "Configuration information loaded\n";
-    }).then(
-        std::move(func)
+    },"when started config").then(
+        std::move(func),"main中的func"
     ).then_wrapped([] (auto&& f) {
         try {
             f.get();
