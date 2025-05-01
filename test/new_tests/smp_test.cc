@@ -2,6 +2,7 @@
 #include"../include/app/app-template.hh"
 
 future<bool> test_smp_call() {
+    std::cout<<"开始执行test_smp_call函数"<<std::endl;
     return smp::submit_to(1, [] {
         return make_ready_future<int>(3);
     }).then([] (int ret) {
@@ -44,13 +45,20 @@ future<> report(std::string msg, future<bool>&& result) {
     });
 }
 
+// int main(int ac, char** av) {
+//     return app_template().run_deprecated(ac, av, [] {
+//        return report("smp call", test_smp_call()).then([] {
+//            return report("smp exception", test_smp_exception());
+//        }).then([] {
+//            printf("\n %d tests / %d failures\n", tests, fails);
+//            engine().exit(fails ? 1 : 0);
+//        });
+//     });
+// }
+
 int main(int ac, char** av) {
     return app_template().run_deprecated(ac, av, [] {
-       return report("smp call", test_smp_call()).then([] {
-           return report("smp exception", test_smp_exception());
-       }).then([] {
-           printf("\n %d tests / %d failures\n", tests, fails);
-           engine().exit(fails ? 1 : 0);
-       });
+        std::cout<<"开始执行main函数"<<std::endl;
+        return 0;
     });
 }

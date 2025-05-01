@@ -164,11 +164,11 @@ int app_template::run_deprecated(int ac, char ** av, std::function<void ()>&& fu
     std::cout << "Configuring SMP\n";
     configuration.emplace("argv0", boost::program_options::variable_value(std::string(av[0]), false));
     std::cout << "Configuring SMP 2\n";
-    //这里报错.
-    smp::configure(configuration);//
+    smp::configure(configuration);
     std::cout<<"smp configure end\n"<<std::endl;
     _configuration = {std::move(configuration)};
     std::cout << "Starting engine\n";
+    std::cout<<"app的engine id"<<engine()._id<<std::endl;
     engine().when_started().then([this] {
         std::cout << "Engine started. Configuring metrics and scollectd\n";
         // metrics::configure(this->configuration()).then([this] {
@@ -186,15 +186,12 @@ int app_template::run_deprecated(int ac, char ** av, std::function<void ()>&& fu
             engine().exit(1);
         }
     });
-
     std::cout << "Running engine\n";
-    // auto exit_code = engine().run();
+    auto exit_code = engine().run();
     // std::cout << "Engine exited with code: " << exit_code << "\n";
-
     // std::cout << "Cleaning up SMP\n";
-    // smp::cleanup();
-    // return exit_code;
-    return 0;
+    smp::cleanup();
+    return exit_code;
 }
 
 

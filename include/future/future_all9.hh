@@ -2179,15 +2179,6 @@ struct future_state<> {
         return {};
     }
     void forward_to(promise<>& pr) noexcept;
-    //     assert(_u.st != state::future && _u.st != state::invalid);
-    //     if (_u.st >= state::exception_min) {
-    //         pr.set_urgent_exception(std::move(_u.ex));
-    //         _u.ex.~exception_ptr();
-    //     }else{
-    //         pr.set_urgent_value(std::tuple<>());
-    //     }
-    //     _u.st = state::invalid;
-    // }
 };
 
 template <typename Func, typename... T>
@@ -4660,7 +4651,6 @@ private:
     std::deque<entry> _list;
     OnExpiry _on_expiry;
     size_t _size = 0;
-
     void drop_expired_front() {
         while (!_list.empty() && !_list.front().payload) {
             _list.pop_front();
@@ -6486,9 +6476,9 @@ struct reactor {
     semaphore _cpu_started;
     promise<> _start_promise;
     future<> when_started() { 
-        //为什么不执行这里？
-        std::cout <<this->_id<<"when_started" << std::endl;
-        return _start_promise.get_future(); }
+        std::cout<<"when_started" << std::endl;//这里被执行.
+        return _start_promise.get_future(); 
+    }
     /*---------- 全局--------------*/
     int run();
     /*----------配置相关----------------*/
@@ -9139,7 +9129,7 @@ bool reactor::queue_timer(manual_timer* tmr) {
 }
 
 bool reactor::queue_timer(steady_timer* tmr) {
-    std::cout<<"reaactor queue timer"<<std::endl;
+    // std::cout<<"reaactor queue timer"<<std::endl;
     return _timers.insert(*tmr);
 }
 
@@ -9759,7 +9749,7 @@ bool signals::poll_signal() {
             // std::cout<<"遍历"<<std::endl;
             if (signals & (1ull << i)) {
                 //执行handler
-                std::cout<<"执行handler"<<std::endl;
+                // std::cout<<"执行handler"<<std::endl;
                _signal_handlers.at(i)._handler();
             }
         }
@@ -9771,7 +9761,7 @@ bool signals::pure_poll_signal() const {
 }
 
 void signals::action(int signo, siginfo_t* siginfo, void* ignore) {
-    std::cout<<"action########"<<std::endl;
+    // std::cout<<"action########"<<std::endl;
     engine()._signals._pending_signals.fetch_or(1ull << signo, std::memory_order_relaxed);
 }
 
@@ -9822,7 +9812,7 @@ void reactor::complete_timers(T& timers, E& expired_timers, EnableFunc&& enable_
     // 处理所有过期定时器
     for (auto* timer_ptr : expired_timers) {
         if (timer_ptr) {
-            std::cout << "Marking timer " << " as expired" << std::endl;
+            // std::cout << "Marking timer " << " as expired" << std::endl;
             timer_ptr->_expired = true;
         }
     }
@@ -9831,7 +9821,7 @@ void reactor::complete_timers(T& timers, E& expired_timers, EnableFunc&& enable_
         auto* timer_ptr = expired_timers.front();
         expired_timers.pop_front();
         if (timer_ptr) {
-            std::cout << "Processing timer "<<std::endl;
+            // std::cout << "Processing timer "<<std::endl;
             timer_ptr->_queued = false;
             if (timer_ptr->_armed) {
                 timer_ptr->_armed = false;
@@ -9841,7 +9831,7 @@ void reactor::complete_timers(T& timers, E& expired_timers, EnableFunc&& enable_
 
                 }
                 try {
-                    std::cout << "Executing timer callback for " << std::endl;
+                    // std::cout << "Executing timer callback for " << std::endl;
                     timer_ptr->_callback();
                 } catch (const std::exception& e) {
                     // std::cerr << "Timer " << timer_ptr->_timerid << " callback failed: " << e.what() << std::endl;
@@ -9906,6 +9896,7 @@ int reactor::run(){
     start_aio_eventfd_loop();
     if (_id == 0) {
        if (_handle_sigint) {
+        //这里为true.
           _signals.handle_signal_once(SIGINT, [this] { stop(); });
        }
        _signals.handle_signal_once(SIGTERM, [this] { stop(); });
@@ -10924,7 +10915,7 @@ struct cpu_pages {
     union pla {
         pla() {
             for (auto&& e : free_spans) {
-                std::cout<<"开始初始化free_spans"<<std::endl;
+                // std::cout<<"开始初始化free_spans"<<std::endl;
                 new (&e) page_list;
             }
         }
@@ -12623,22 +12614,16 @@ thread_pool::~thread_pool() {
     _worker_thread.join();
 }
 
-
-
-
-
-
-
-
-void
-reactor::start_epoll() {
+void reactor::start_epoll() {
     if (!_epoll_poller) {
         _epoll_poller = poller(std::make_unique<epoll_pollfn>(*this));
     }
 }
 
 void reactor::start_aio_eventfd_loop() {
-    if (!_aio_eventfd) {
+    if (!_aio_eventfd){
+        //执行了这行代码.
+        std::cout<<"没有设置aio_eventfd"<<std::endl;
         return;
     }
     future<> loop_done = repeat([this] {
