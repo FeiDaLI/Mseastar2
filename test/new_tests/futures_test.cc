@@ -22,7 +22,7 @@
 
 
 #include "../../include/util/shared_ptr.hh"
-#include "../../include/future/future_all8.hh"
+#include "../../include/future/future_all10.hh"
 #include "../../include/future/sleep.hh"
 #include <boost/iterator/counting_iterator.hpp>
 

@@ -24,7 +24,7 @@
 #include <boost/program_options.hpp>
 #include <boost/optional.hpp>
 #include <functional>
-#include "../future/future_all9.hh"
+#include "../future/future_all10.hh"
 #include <string>
 #include <boost/program_options.hpp>
 #include <boost/program_options.hpp>
@@ -164,19 +164,19 @@ int app_template::run_deprecated(int ac, char ** av, std::function<void ()>&& fu
     std::cout << "Configuring SMP\n";
     configuration.emplace("argv0", boost::program_options::variable_value(std::string(av[0]), false));
     std::cout << "Configuring SMP 2\n";
-    //这里报错.
-    smp::configure(configuration);//
+    smp::configure(configuration);
     std::cout<<"smp configure end\n"<<std::endl;
     _configuration = {std::move(configuration)};
-
+    std::cout << "Starting engine\n";
+    std::cout<<"app的engine id"<<engine()._id<<std::endl;
     engine().when_started().then([this] {
         std::cout << "Engine started. Configuring metrics and scollectd\n";
         // metrics::configure(this->configuration()).then([this] {
         //     scollectd::configure(this->configuration());
         // });
         std::cout << "Configuration information loaded\n";
-    }).then(
-        std::move(func)
+    },"when started config").then(
+        std::move(func),"main中的func"
     ).then_wrapped([] (auto&& f) {
         try {
             f.get();
@@ -186,12 +186,10 @@ int app_template::run_deprecated(int ac, char ** av, std::function<void ()>&& fu
             engine().exit(1);
         }
     });
-
     std::cout << "Running engine\n";
     auto exit_code = engine().run();
-    std::cout << "Engine exited with code: " << exit_code << "\n";
-
-    std::cout << "Cleaning up SMP\n";
+    // std::cout << "Engine exited with code: " << exit_code << "\n";
+    // std::cout << "Cleaning up SMP\n";
     smp::cleanup();
     return exit_code;
 }
