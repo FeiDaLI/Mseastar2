@@ -335,6 +335,22 @@ void prefetchw_n(T** pptr) {
     boost::mpl::for_each< boost::mpl::range_c<size_t,0,C> >( [pptr] (size_t x) { prefetchw<L, LOC>(*(pptr + x)); } );
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #include <bitset>
 #include <limits>
 #include <variant>
@@ -1546,6 +1562,16 @@ std::ostream& operator<<(std::ostream& os, const std::unordered_map<Key, T, Hash
     return os;
 }
 }
+
+
+
+
+
+
+
+
+
+
 
 class reactor;
 reactor& engine();
@@ -4621,7 +4647,6 @@ struct promise_expiry {
         pr.set_exception(std::make_exception_ptr(timed_out_error()));
     };
 };
-
 template <typename T, typename OnExpiry = dummy_expiry<T>, typename Clock = lowres_clock>
 class expiring_fifo {
 public:
@@ -4647,7 +4672,6 @@ private:
         entry(entry&& x) = delete;
         entry(const entry& x) = delete;
     };
-
     std::deque<entry> _list;
     OnExpiry _on_expiry;
     size_t _size = 0;
@@ -4659,11 +4683,9 @@ private:
 public:
     expiring_fifo() = default;
     expiring_fifo(OnExpiry on_expiry) : _on_expiry(std::move(on_expiry)) {}
-
     bool empty() const {
         return _size == 0;
     }
-
     explicit operator bool() const {
         return !empty();
     }
@@ -4737,7 +4759,7 @@ class basic_semaphore {
 public:
     using duration = typename timer<Clock>::duration;
     using clock = typename timer<Clock>::clock;
-    using time_point = typename timer<Clock>::time_point;
+    using time_point = typename timer<Clock>::time_point;//这里类似类型萃取.
 private:
     ssize_t _count;
     std::exception_ptr _ex;
@@ -5618,6 +5640,51 @@ public:
 };
 
 
+class network_stack_registry {
+public:
+    using options = boost::program_options::variables_map;
+private:
+    static std::unordered_map<sstring,
+            std::function<future<std::unique_ptr<network_stack>> (options opts)>>& _map() {
+        static std::unordered_map<sstring,
+                std::function<future<std::unique_ptr<network_stack>> (options opts)>> map;
+        return map;
+    }
+    static sstring& _default() {
+        static sstring def;
+        return def;
+    }
+public:
+    static boost::program_options::options_description& options_description() {
+        static boost::program_options::options_description opts;
+        return opts;
+    }
+    static void register_stack(sstring name,
+            boost::program_options::options_description opts,
+            std::function<future<std::unique_ptr<network_stack>> (options opts)> create,
+            bool make_default = false);
+    static sstring default_stack();
+    static std::vector<sstring> list();
+    static future<std::unique_ptr<network_stack>> create(options opts);
+    static future<std::unique_ptr<network_stack>> create(sstring name, options opts);
+};
+
+
+
+class network_stack_registrator {
+public:
+    using options = boost::program_options::variables_map;
+    explicit network_stack_registrator(sstring name,
+            boost::program_options::options_description opts,
+            std::function<future<std::unique_ptr<network_stack>> (options opts)> factory,
+            bool make_default = false);
+};
+
+
+
+
+
+
 /*-------------------------------------------------reactor类定义----------------------------------------------------------------*/
 #include "../resource/resource.hh"
 #include <boost/thread/barrier.hpp>
@@ -6369,6 +6436,120 @@ enum class open_flags {
 inline open_flags operator|(open_flags a, open_flags b) {
     return open_flags(static_cast<unsigned int>(a) | static_cast<unsigned int>(b));
 }
+
+
+
+/*posix_stack*/
+
+namespace net {
+
+class posix_data_source_impl final : public data_source_impl {
+    lw_shared_ptr<pollable_fd> _fd;
+    temporary_buffer<char> _buf;
+    size_t _buf_size;
+public:
+    explicit posix_data_source_impl(lw_shared_ptr<pollable_fd> fd, size_t buf_size = 8192)
+        : _fd(std::move(fd)), _buf(buf_size), _buf_size(buf_size) {}
+    future<temporary_buffer<char>> get() override;
+    future<> close() override;
+};
+
+class posix_data_sink_impl : public data_sink_impl {
+    lw_shared_ptr<pollable_fd> _fd;
+    packet _p;
+public:
+    explicit posix_data_sink_impl(lw_shared_ptr<pollable_fd> fd) : _fd(std::move(fd)) {}
+    future<> put(packet p) override;
+    future<> put(temporary_buffer<char> buf) override;
+    future<> close() override;
+};
+
+template <transport Transport>
+class posix_ap_server_socket_impl : public server_socket_impl {
+    struct connection {
+        pollable_fd fd;
+        socket_address addr;
+        connection(pollable_fd xfd, socket_address xaddr) : fd(std::move(xfd)), addr(xaddr) {}
+    };
+    static thread_local std::unordered_map<::sockaddr_in, promise<connected_socket, socket_address>> sockets;
+    static thread_local std::unordered_multimap<::sockaddr_in, connection> conn_q;
+    socket_address _sa;
+public:
+    explicit posix_ap_server_socket_impl(socket_address sa) : _sa(sa) {}
+    virtual future<connected_socket, socket_address> accept() override;
+    virtual void abort_accept() override;
+    static void move_connected_socket(socket_address sa, pollable_fd fd, socket_address addr);
+};
+using posix_tcp_ap_server_socket_impl = posix_ap_server_socket_impl<transport::TCP>;
+using posix_sctp_ap_server_socket_impl = posix_ap_server_socket_impl<transport::SCTP>;
+
+template <transport Transport>
+class posix_server_socket_impl : public server_socket_impl {
+    socket_address _sa;
+    pollable_fd _lfd;
+public:
+    explicit posix_server_socket_impl(socket_address sa, pollable_fd lfd) : _sa(sa), _lfd(std::move(lfd)) {}
+    virtual future<connected_socket, socket_address> accept();
+    virtual void abort_accept() override;
+};
+using posix_server_tcp_socket_impl = posix_server_socket_impl<transport::TCP>;
+using posix_server_sctp_socket_impl = posix_server_socket_impl<transport::SCTP>;
+
+template <transport Transport>
+class posix_reuseport_server_socket_impl : public server_socket_impl {
+    socket_address _sa;
+    pollable_fd _lfd;
+public:
+    explicit posix_reuseport_server_socket_impl(socket_address sa, pollable_fd lfd) : _sa(sa), _lfd(std::move(lfd)) {}
+    virtual future<connected_socket, socket_address> accept();
+    virtual void abort_accept() override;
+};
+using posix_reuseport_server_tcp_socket_impl = posix_reuseport_server_socket_impl<transport::TCP>;
+using posix_reuseport_server_sctp_socket_impl = posix_reuseport_server_socket_impl<transport::SCTP>;
+
+class posix_network_stack : public network_stack {
+private:
+    const bool _reuseport;
+public:
+    explicit posix_network_stack(boost::program_options::variables_map opts) : _reuseport(engine().posix_reuseport_available()) {}
+    virtual server_socket listen(socket_address sa, listen_options opts) override;
+    virtual ::seastar::socket socket() override;
+    virtual ::net::udp_channel make_udp_channel(ipv4_addr addr) override;
+    static future<std::unique_ptr<network_stack>> create(boost::program_options::variables_map opts) {
+        return make_ready_future<std::unique_ptr<network_stack>>(std::unique_ptr<network_stack>(new posix_network_stack(opts)));
+    }
+    virtual bool has_per_core_namespace() override { return _reuseport; };
+};
+
+class posix_ap_network_stack : public posix_network_stack {
+private:
+    const bool _reuseport;
+public:
+    posix_ap_network_stack(boost::program_options::variables_map opts) : posix_network_stack(std::move(opts)), _reuseport(engine().posix_reuseport_available()) {}
+    virtual server_socket listen(socket_address sa, listen_options opts) override;
+    static future<std::unique_ptr<network_stack>> create(boost::program_options::variables_map opts) {
+        return make_ready_future<std::unique_ptr<network_stack>>(std::unique_ptr<network_stack>(new posix_ap_network_stack(opts)));
+    }
+};
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 struct reactor {
     struct poller {
@@ -10064,12 +10245,19 @@ reactor::get_options_description() {
 
 
 void reactor::configure(boost::program_options::variables_map vm) {
-    // auto network_stack_ready = vm.count("network-stack")
-    //  ? network_stack_registry::create(sstring(vm["network-stack"].as<std::string>()), vm)
-    //     : network_stack_registry::create(vm);
-    // network_stack_ready.then([this] (std::unique_ptr<network_stack> stack) {
-    //     _network_stack_ready_promise.set_value(std::move(stack));
-    // });
+    std::cout<<"reactor::configure"<<std::endl;
+    auto network_stack_ready = 
+       vm.count("network-stack")
+        ? network_stack_registry::create(sstring(vm["network-stack"].as<std::string>()), vm)
+        : network_stack_registry::create(vm);
+
+
+    network_stack_ready.then([this] (std::unique_ptr<network_stack> stack) {
+        _network_stack_ready_promise.set_value(std::move(stack));
+    });
+    std::cout<<"reactor::configure完成"<<std::endl;
+
+    /*上面这段代码什么意思？*/
     std::cout<<"reactor::configure"<<std::endl;
     _handle_sigint = !vm.count("no-handle-interrupt");
     std::cout<<"reactor::configure  _handle_sigint:"<<_handle_sigint<<std::endl;
@@ -12747,3 +12935,55 @@ reactor::sleep() {
         (*i)->exit_interrupt_mode();
     }
 }
+
+
+
+void network_stack_registry::register_stack(sstring name,
+        boost::program_options::options_description opts,
+        std::function<future<std::unique_ptr<network_stack>> (options opts)> create, bool make_default) {
+    _map()[name] = std::move(create);
+    options_description().add(opts);
+    if (make_default) {
+        _default() = name;
+    }
+}
+
+sstring network_stack_registry::default_stack() {
+    return _default();
+}
+
+std::vector<sstring> network_stack_registry::list() {
+    std::vector<sstring> ret;
+    for (auto&& ns : _map()) {
+        ret.push_back(ns.first);
+    }
+    return ret;
+}
+
+future<std::unique_ptr<network_stack>>
+network_stack_registry::create(options opts) {
+    return create(_default(), opts);
+}
+
+future<std::unique_ptr<network_stack>>
+network_stack_registry::create(sstring name, options opts) {
+    if (!_map().count(name)) {
+        throw std::runtime_error("network stack not registered");
+    }
+    return _map()[name](opts);
+}
+
+network_stack_registrator::network_stack_registrator(sstring name,
+        boost::program_options::options_description opts,
+        std::function<future<std::unique_ptr<network_stack>>(options opts)> factory,
+        bool make_default) {
+    network_stack_registry::register_stack(name, opts, factory, make_default);
+}
+
+network_stack_registrator nsr_posix{"posix",
+    boost::program_options::options_description(),
+    [](boost::program_options::variables_map ops) {
+        return smp::main_thread() ? posix_network_stack::create(ops) : posix_ap_network_stack::create(ops);
+    },
+    true
+};
