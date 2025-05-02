@@ -8,7 +8,8 @@ SRCS = \
     include/resource/resource.cc \
     test/new_tests/smp_test.cc \
 	include/util/backtrace.cc \
-	include/app/app-template.cc
+	include/app/app-template.cc \
+	include/future/future_all10.cc \
 	
 # 生成对象文件列表
 OBJS = $(SRCS:%.cc=build/%.o)
