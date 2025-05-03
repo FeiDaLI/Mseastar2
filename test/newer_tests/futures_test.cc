@@ -1,4 +1,3 @@
-#include "../../include/app/app-template.hh"
 #include <boost/iterator/counting_iterator.hpp>
 #include "../../include/test/test-utils.hh"
 #include <cstdio>

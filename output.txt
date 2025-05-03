@@ -1,33 +1,3 @@
-g++ build/include/resource/resource.o build/test/newer_tests/futures_test.o build/include/util/backtrace.o build/include/app/app-template.o build/include/future/future_all10.o -o build/future_test -pthread -lboost_system -lboost_thread -lrt -lhwloc -lboost_program_options -laio  -lunwind -lboost_unit_test_framework
-/usr/lib/gcc/x86_64-linux-gnu/10/../../../x86_64-linux-gnu/Scrt1.o: In function `_start':
-(.text+0x20): undefined reference to `main'
-build/test/newer_tests/futures_test.o: In function `future<> with_timeout<test_custom_exception_factory_in_with_timeout::run_test_case()::{lambda()#1}::operator()() const::my_exception_factory, manual_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> >>(manual_clock::time_point<manual_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >)':
-/home/lifd/Mseastar2/test/newer_tests/../../include/app/../future/future_all10.hh:9232: undefined reference to `timer<manual_clock>::timer(timer<manual_clock>&&)'
-build/test/newer_tests/futures_test.o: In function `_ZZ12with_timeoutIZZN45test_custom_exception_factory_in_with_timeout13run_test_caseEvENKUlvE_clEvE20my_exception_factory12manual_clockNSt6chrono8durationIlSt5ratioILl1ELl1000000000EEEEJEE6futureIJDpT2_EENS4_10time_pointIT0_T1_EESC_ENUlOT_E0_C2EOSJ_':
-/home/lifd/Mseastar2/test/newer_tests/../../include/app/../future/future_all10.hh:9232: undefined reference to `timer<manual_clock>::timer(timer<manual_clock>&&)'
-build/test/newer_tests/futures_test.o: In function `__static_initialization_and_destruction_0(int, int)':
-/usr/local/include/boost/test/unit_test_log.hpp:227: undefined reference to `boost::unit_test::unit_test_log_t::instance()'
-build/test/newer_tests/futures_test.o: In function `boost::unit_test::lazy_ostream::instance()':
-/usr/local/include/boost/test/utils/lazy_ostream.hpp:36: undefined reference to `boost::unit_test::lazy_ostream::inst'
-build/test/newer_tests/futures_test.o: In function `test_finally_is_called_on_success_and_failure::test_finally_is_called_on_success_and_failure()':
-/home/lifd/Mseastar2/test/newer_tests/futures_test.cc:12: undefined reference to `seastar_test::seastar_test()'
-build/test/newer_tests/futures_test.o: In function `test_get_on_promise::test_get_on_promise()':
-/home/lifd/Mseastar2/test/newer_tests/futures_test.cc:35: undefined reference to `seastar_test::seastar_test()'
-build/test/newer_tests/futures_test.o: In function `test_finally_waits_for_inner::test_finally_waits_for_inner()':
-/home/lifd/Mseastar2/test/newer_tests/futures_test.cc:42: undefined reference to `seastar_test::seastar_test()'
-build/test/newer_tests/futures_test.o: In function `test_finally_is_called_on_success_and_failure__not_ready_to_armed::test_finally_is_called_on_success_and_failure__not_ready_to_armed()':
-/home/lifd/Mseastar2/test/newer_tests/futures_test.cc:59: undefined reference to `seastar_test::seastar_test()'
-build/test/newer_tests/futures_test.o: In function `test_exception_from_finally_fails_the_target::test_exception_from_finally_fails_the_target()':
-/home/lifd/Mseastar2/test/newer_tests/futures_test.cc:82: undefined reference to `seastar_test::seastar_test()'
-build/test/newer_tests/futures_test.o:/home/lifd/Mseastar2/test/newer_tests/futures_test.cc:98: more undefined references to `seastar_test::seastar_test()' follow
-build/test/newer_tests/futures_test.o: In function `future<> with_timeout<default_timeout_exception_factory, manual_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> >>(std::chrono::time_point<manual_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >, future<>)':
-/home/lifd/Mseastar2/test/newer_tests/../../include/app/../future/future_all10.hh:9232: undefined reference to `timer<manual_clock>::timer(timer<manual_clock>&&)'
-build/test/newer_tests/futures_test.o: In function `future<int> with_timeout<default_timeout_exception_factory, manual_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> >, int>(std::chrono::time_point<manual_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >, future<int>)':
-/home/lifd/Mseastar2/test/newer_tests/../../include/app/../future/future_all10.hh:9232: undefined reference to `timer<manual_clock>::timer(timer<manual_clock>&&)'
-build/test/newer_tests/futures_test.o: In function `with_timeout<default_timeout_exception_factory, manual_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> >>(std::chrono::time_point<manual_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >, future<>)::{lambda(auto:1&&)#2}::time_point({lambda(auto:1&&)#2}&&)':
-/home/lifd/Mseastar2/test/newer_tests/../../include/app/../future/future_all10.hh:9232: undefined reference to `timer<manual_clock>::timer(timer<manual_clock>&&)'
-build/test/newer_tests/futures_test.o: In function `with_timeout<default_timeout_exception_factory, manual_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> >, int>(std::chrono::time_point<manual_clock, std::chrono::duration<long, std::ratio<1l, 1000000000l> > >, future<int>)::{lambda(auto:1&&)#2}::time_point({lambda(auto:1&&)#2}&&)':
-/home/lifd/Mseastar2/test/newer_tests/../../include/app/../future/future_all10.hh:9232: undefined reference to `timer<manual_clock>::timer(timer<manual_clock>&&)'
-collect2: error: ld returned 1 exit status
-makefile:86: recipe for target 'build/future_test' failed
-make: *** [build/future_test] Error 1
+g++ -w -Wall -std=c++20 -g -Iinclude -pthread -MMD -c include/app/app-template.cc -o build/include/app/app-template.o
+g++ -w -Wall -std=c++20 -g -Iinclude -pthread -MMD -c include/future/future_all10.cc -o build/include/future/future_all10.o
+g++ build/include/resource/resource.o build/test/new_tests/smp_test.o build/include/app/app-template.o build/include/future/future_all10.o -o build/smp_test -pthread -lboost_system -lboost_thread -lrt -lhwloc -lboost_program_options -laio  -lunwind

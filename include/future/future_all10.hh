@@ -1,5 +1,4 @@
-#ifndef FUTURE_ALL_HH
-#define FUTURE_ALL_HH
+#pragma once
 #include "../task/task.hh"
 #include <stdexcept>
 #include <atomic>
@@ -52,7 +51,7 @@
 #include <libaio.h>
 #include <sys/mman.h>
 #include "../util/align.hh"
-#include "../util/backtrace.hh"
+// #include "../util/backtrace.hh"
 #include "../util/bool_class.hh"
 
 template <typename Func>
@@ -135,13 +134,8 @@ inline reference_wrapper<const T> cref(const T& object) noexcept {
 
 
 
-#ifdef __cpp_concepts
-#define GCC6_CONCEPT(x...) x
-#define GCC6_NO_CONCEPT(x...)
-#else
 #define GCC6_CONCEPT(x...)
 #define GCC6_NO_CONCEPT(x...) x
-#endif
 
 __thread bool g_need_preempt;
 inline bool need_preempt() {
@@ -9374,7 +9368,7 @@ void enable_timer(steady_clock_type::time_point when)
 {
     engine().enable_timer(when);
 }
-#endif
+
 
 
 
@@ -10939,7 +10933,6 @@ disable_abort_on_alloc_failure_temporarily::~disable_abort_on_alloc_failure_temp
 
 }
 
-#ifndef DEFAULT_ALLOCATOR
 
 #include "../util/bitops.hh"
 #include "../util/align.hh"
@@ -10958,12 +10951,9 @@ disable_abort_on_alloc_failure_temporarily::~disable_abort_on_alloc_failure_temp
 #include <sys/uio.h>  // For writev
 #include <boost/intrusive/list.hpp>
 #include <sys/mman.h>
-
 #include "../util/backtrace.hh"
 #include <unordered_set>
-#ifdef HAVE_NUMA
-#include <numaif.h>
-#endif
+
 
 struct allocation_site {
     mutable size_t count = 0; // number of live objects allocated at backtrace.
@@ -11467,27 +11457,12 @@ cpu_pages::allocate_large_aligned(unsigned align_pages, unsigned n_pages) {
     });
 }
 
-#ifdef SEASTAR_HEAPPROF
 
-class disable_backtrace_temporarily {
-    bool _old;
-public:
-    disable_backtrace_temporarily() {
-        _old = cpu_mem.collect_backtrace;
-        cpu_mem.collect_backtrace = false;
-    }
-    ~disable_backtrace_temporarily() {
-        cpu_mem.collect_backtrace = _old;
-    }
-};
-
-#else
 
 struct disable_backtrace_temporarily {
     ~disable_backtrace_temporarily() {}
 };
 
-#endif
 
 static
 saved_backtrace get_backtrace() noexcept {
@@ -11512,18 +11487,6 @@ allocation_site_ptr get_allocation_site() {
     return alloc_site;
 }
 
-#ifdef SEASTAR_HEAPPROF
-
-allocation_site_ptr&
-small_pool::alloc_site_holder(void* ptr) {
-    if (objects_page_aligned()) {
-        return cpu_mem.to_page(ptr)->alloc_site;
-    } else {
-        return *reinterpret_cast<allocation_site_ptr*>(reinterpret_cast<char*>(ptr) + _object_size - sizeof(allocation_site_ptr));
-    }
-}
-
-#endif
 
 void*
 cpu_pages::allocate_small(unsigned size) {
@@ -11531,30 +11494,12 @@ cpu_pages::allocate_small(unsigned size) {
     auto& pool = small_pools[idx];
     assert(size <= pool.object_size());
     auto ptr = pool.allocate();
-#ifdef SEASTAR_HEAPPROF
-    if (!ptr) {
-        return nullptr;
-    }
-    allocation_site_ptr alloc_site = get_allocation_site();
-    if (alloc_site) {
-        ++alloc_site->count;
-        alloc_site->size += pool.object_size();
-    }
-    new (&pool.alloc_site_holder(ptr)) allocation_site_ptr{alloc_site};
-#endif
     return ptr;
 }
 
 void cpu_pages::free_large(void* ptr) {
     pageidx idx = (reinterpret_cast<char*>(ptr) - mem()) / page_size;
     page* span = &pages[idx];
-#ifdef SEASTAR_HEAPPROF
-    auto alloc_site = span->alloc_site;
-    if (alloc_site) {
-        --alloc_site->count;
-        alloc_site->size -= span->span_size * page_size;
-    }
-#endif
     free_span(idx, span->span_size);
 }
 
@@ -11563,12 +11508,6 @@ size_t cpu_pages::object_size(void* ptr) {
     page* span = &pages[idx];
     if (span->pool) {
         auto s = span->pool->object_size();
-#ifdef SEASTAR_HEAPPROF
-        // We must not allow the object to be extended onto the allocation_site_ptr field.
-        if (!span->pool->objects_page_aligned()) {
-            s -= sizeof(allocation_site_ptr);
-        }
-#endif
         return s;
     } else {
         return size_t(span->span_size) * page_size;
@@ -11608,13 +11547,6 @@ void cpu_pages::free(void* ptr) {
     page* span = to_page(ptr);
     if (span->pool) {
         small_pool& pool = *span->pool;
-#ifdef SEASTAR_HEAPPROF
-        allocation_site_ptr alloc_site = pool.alloc_site_holder(ptr);
-        if (alloc_site) {
-            --alloc_site->count;
-            alloc_site->size -= pool.object_size();
-        }
-#endif
         pool.deallocate(ptr);
     } else {
         free_large(ptr);
@@ -11629,13 +11561,6 @@ void cpu_pages::free(void* ptr, size_t size) {
     if (size <= max_small_allocation) {
         size = object_size_with_alloc_site(size);
         auto pool = &small_pools[small_pool::size_to_idx(size)];
-#ifdef SEASTAR_HEAPPROF
-        allocation_site_ptr alloc_site = pool->alloc_site_holder(ptr);
-        if (alloc_site) {
-            --alloc_site->count;
-            alloc_site->size -= pool->object_size();
-        }
-#endif
         pool->deallocate(ptr);
     } else {
         free_large(ptr);
@@ -11665,13 +11590,6 @@ void cpu_pages::shrink(void* ptr, size_t new_size) {
     if (new_size_pages == old_size_pages) {
         return;
     }
-#ifdef SEASTAR_HEAPPROF
-    auto alloc_site = span->alloc_site;
-    if (alloc_site) {
-        alloc_site->size -= span->span_size * page_size;
-        alloc_site->size += new_size_pages * page_size;
-    }
-#endif
     span->span_size = new_size_pages;
     span[new_size_pages - 1].free = false;
     span[new_size_pages - 1].span_size = new_size_pages;
@@ -12222,21 +12140,10 @@ void set_min_free_pages(size_t pages) {
 
 
 
-
-
-
-
-
-
-
-
-
 inline bool engine_is_ready() {
     return local_engine != nullptr;
 }
 
-
-#endif // DEFAULT_ALLOCATOR
 
 template <typename... T>
 inline
@@ -13880,5 +13787,3 @@ future<> sleep_abortable(std::chrono::duration<Rep, Period> dur) {
         } catch(condition_variable_timed_out&) {};
     });
 }
-
-

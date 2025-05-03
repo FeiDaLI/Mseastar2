@@ -6,9 +6,9 @@ build/test/new_tests/smp_test.o: test/new_tests/smp_test.cc \
  include/../include/app/../future/do_with.hh \
  include/../include/app/../future/../resource/resource.hh \
  include/../include/app/../future/../util/align.hh \
- include/../include/app/../future/../util/backtrace.hh \
  include/../include/app/../future/../util/bool_class.hh \
  include/../include/app/../future/../util/spinlock.hh \
  include/../include/app/../future/../util/unaligned.hh \
  include/../include/app/../future/../util/bitops.hh \
- include/../include/app/../future/../fd/posix.hh
+ include/../include/app/../future/../fd/posix.hh \
+ include/../include/app/../future/../util/backtrace.hh
