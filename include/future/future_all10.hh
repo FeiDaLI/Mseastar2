@@ -6574,6 +6574,8 @@ struct reactor {
     void complete_timers(T&, E&, EnableFunc&& enable_fn);
     bool do_check_lowres_timers() const;
     void expire_manual_timers();
+
+
 /*---------------信号处理相关------------------------*/
     signals _signals;
     bool _handle_sigint = true;
@@ -6603,6 +6605,10 @@ struct reactor {
     void sleep();
     void force_poll() {
         g_need_preempt = true;
+    }
+    template <typename Rep, typename Period>
+    future<> wait_for_stop(std::chrono::duration<Rep, Period> timeout) {
+        return _stop_requested.wait(timeout, [this] { return _stopping; });
     }
     void at_exit(std::function<future<> ()> func);
     void exit(int ret);

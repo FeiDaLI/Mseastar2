@@ -158,7 +158,6 @@ int app_template::run_deprecated(int ac, char ** av, std::function<void ()>&& fu
         std::cout << "Help requested. Printing options:\n" << _opts << "\n";
         return 1;
     }
-    
     std::cout << "Notifying configuration changes\n";
     bpo::notify(configuration);//把命令行或者文件中的配置保存到variable_map中.
     std::cout << "Configuring SMP\n";
@@ -193,8 +192,4 @@ int app_template::run_deprecated(int ac, char ** av, std::function<void ()>&& fu
     smp::cleanup();
     return exit_code;
 }
-
-
-
-
 #endif
