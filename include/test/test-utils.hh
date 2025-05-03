@@ -21,12 +21,10 @@
  */
 
 #pragma once
-
-
 #include <boost/test/unit_test.hpp>
-
-#include "core/future.hh"
+#include "../future/future_all10.hh"
 #include "test_runner.hh"
+
 
 class seastar_test {
 public:

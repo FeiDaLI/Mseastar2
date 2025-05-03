@@ -38,26 +38,26 @@ int tests, fails;
 future<> report(std::string msg, future<bool>&& result) {
     std::cout<<"开始执行report函数"<<std::endl;
     return std::move(result).then([msg] (bool result) {
-        // printf("%s: %s\n", (result ? "PASS" : "FAIL"), msg);
+        printf("%s: %s\n", (result ? "PASS" : "FAIL"), msg);
         tests += 1;
         fails += !result;
     });
 }
 
-// int main(int ac, char** av) {
-//     return app_template().run_deprecated(ac, av, [] {
-//        return report("smp call", test_smp_call()).then([] {
-//            return report("smp exception", test_smp_exception());
-//        }).then([] {
-//            printf("\n %d tests / %d failures\n", tests, fails);
-//            engine().exit(fails ? 1 : 0);
-//        });
-//     });
-// }
-
 int main(int ac, char** av) {
     return app_template().run_deprecated(ac, av, [] {
-        std::cout<<"开始执行main函数"<<std::endl;
-        return 0;
+       return report("smp call", test_smp_call()).then([] {
+           return report("smp exception", test_smp_exception());
+       }).then([] {
+           printf("\n %d tests / %d failures\n", tests, fails);
+           engine().exit(fails ? 1 : 0);
+       });
     });
 }
+
+// int main(int ac, char** av) {
+//     return app_template().run_deprecated(ac, av, [] {
+//         std::cout<<"开始执行main函数"<<std::endl;
+//         return 0;
+//     });
+// }

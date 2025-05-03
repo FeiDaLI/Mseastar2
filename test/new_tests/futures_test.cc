@@ -20,7 +20,6 @@
 //  */
 
 
-
 #include "../../include/util/shared_ptr.hh"
 #include "../../include/future/future_all10.hh"
 #include "../../include/future/sleep.hh"
