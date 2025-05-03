@@ -21,8 +21,7 @@
 #include <memory>
 #include <functional>
 #include <atomic>
-#include "core/future.hh"
-#include "core/posix.hh"
+#include "../app/app-template.hh"
 #include "exchanger.hh"
 
 class posix_thread;

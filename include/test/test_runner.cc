@@ -17,10 +17,6 @@
  */
 
 #include <iostream>
-
-#include "core/app-template.hh"
-#include "core/future-util.hh"
-#include "core/reactor.hh"
 #include "test_runner.hh"
 
 static test_runner instance;
@@ -63,8 +59,7 @@ test_runner::start(int ac, char** av) {
     });
 }
 
-void
-test_runner::run_sync(std::function<future<>()> task) {
+void test_runner::run_sync(std::function<future<>()> task) {
     exchanger<std::exception_ptr> e;
     _task.give([task = std::move(task), &e] {
         try {

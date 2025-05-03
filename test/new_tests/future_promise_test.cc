@@ -1,4 +1,4 @@
-#include"../include/future/future_all8.hh"
+#include"../include/future/future_all10.hh"
 #include<string>
 #include<chrono>
 #include<iostream>
