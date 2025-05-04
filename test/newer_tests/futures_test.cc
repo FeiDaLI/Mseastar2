@@ -1,7 +1,6 @@
-#include "../../include/future/future_all10.hh"
 #include <boost/iterator/counting_iterator.hpp>
 #include "../../include/test/test-utils.hh"
-
+#include <cstdio>
 using namespace std::chrono_literals;
 
 class expected_exception : std::runtime_error {
@@ -667,7 +666,7 @@ static void check_failed_with(future<T...>&& f) {
     } catch (const E& e) {
         // expected
     } catch (...) {
-        BOOST_FAIL(sprint("wrong exception: %s", std::current_exception()));
+        BOOST_FAIL("unexpected exception type");
     }
 }
 
@@ -680,19 +679,13 @@ SEASTAR_TEST_CASE(test_with_timeout_when_it_times_out) {
     return ::async([] {
         promise<> pr;
         auto f = with_timeout(manual_clock::now() + 2s, pr.get_future());
-
         BOOST_REQUIRE(!f.available());
-
         manual_clock::advance(1s);
         later().get();
-
         BOOST_REQUIRE(!f.available());
-
         manual_clock::advance(1s);
         later().get();
-
         check_timed_out(std::move(f));
-
         pr.set_value();
     });
 }
@@ -712,10 +705,8 @@ SEASTAR_TEST_CASE(test_custom_exception_factory_in_with_timeout) {
         };
         promise<> pr;
         auto f = with_timeout<my_exception_factory>(manual_clock::now() + 1s, pr.get_future());
-
         manual_clock::advance(1s);
         later().get();
-
         check_failed_with<custom_error>(std::move(f));
     });
 }
@@ -725,11 +716,8 @@ SEASTAR_TEST_CASE(test_with_timeout_when_it_does_not_time_out) {
         {
             promise<int> pr;
             auto f = with_timeout(manual_clock::now() + 1s, pr.get_future());
-
             pr.set_value(42);
-
             later().get();
-
             BOOST_REQUIRE(f.available());
             BOOST_REQUIRE_EQUAL(f.get0(), 42);
         }
