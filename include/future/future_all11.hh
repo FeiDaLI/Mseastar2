@@ -126,14 +126,6 @@ inline reference_wrapper<const T> cref(const T& object) noexcept {
 
 
 
-
-
-
-
-
-
-
-
 #define GCC6_CONCEPT(x...)
 #define GCC6_NO_CONCEPT(x...) x
 
@@ -1253,7 +1245,6 @@ public:
     void insert(const_iterator p, InputIterator beg, InputIterator end) {
         replace(p, p, beg, end);
     }
-
     /**
      *  Returns a read/write reference to the data at the last
      *  element of the string.
@@ -1263,7 +1254,6 @@ public:
     back() noexcept {
         return operator[](size() - 1);
     }
-
     /**
      *  Returns a  read-only (constant) reference to the data at the last
      *  element of the string.
@@ -1273,7 +1263,6 @@ public:
     back() const noexcept {
         return operator[](size() - 1);
     }
-
     basic_sstring substr(size_t from, size_t len = npos)  const {
         if (from > size()) {
             throw std::out_of_range("sstring::substr out of range");
@@ -2795,12 +2784,12 @@ protected:
     bool _empty = true;
     bool _flush_scheduled = false;
     stats _stats;
-    sstring _name;
+    std::string _name;
     // metrics::metric_group _metric_group;
 protected:
     virtual void do_flush() noexcept = 0;
 public:
-    explicit execution_stage(const sstring& name);
+    explicit execution_stage(const std::string& name);
     virtual ~execution_stage();
 
     execution_stage(const execution_stage&) = delete;
@@ -2814,7 +2803,7 @@ public:
     execution_stage(execution_stage&&);
 
     /// Returns execution stage name
-    const sstring& name() const noexcept { return _name; }
+    const std::string& name() const noexcept { return _name; }
 
     /// Returns execution stage usage statistics
     const stats& get_stats() const noexcept { return _stats; }
@@ -2853,7 +2842,7 @@ namespace internal {
 
 class execution_stage_manager {
     std::vector<execution_stage*> _execution_stages;
-    std::unordered_map<sstring, execution_stage*> _stages_by_name;
+    std::unordered_map<std::string, execution_stage*> _stages_by_name;
 private:
     execution_stage_manager() = default;
     execution_stage_manager(const execution_stage_manager&) = delete;
@@ -2882,7 +2871,7 @@ public:
         _stages_by_name.find(new_es.name())->second = &new_es;
     }
 
-    execution_stage* get_stage(const sstring& name) {
+    execution_stage* get_stage(const std::string& name) {
         return _stages_by_name[name];
     }
 
@@ -3109,7 +3098,7 @@ private:
         _empty = _queue.empty();
     }
 public:
-    explicit concrete_execution_stage(const sstring& name, Function f)
+    explicit concrete_execution_stage(const std::string& name, Function f)
         : execution_stage(name)
         , _function(std::move(f)){
         _queue.reserve(flush_threshold);
@@ -3130,18 +3119,18 @@ public:
 
 
 template<typename Function>
-auto make_execution_stage(const sstring& name, Function&& fn) {
+auto make_execution_stage(const std::string& name, Function&& fn) {
     using traits = function_traits<Function>;
     return concrete_execution_stage<std::decay_t<Function>, typename traits::return_type,
                                     typename traits::args_as_tuple>(name, std::forward<Function>(fn));
 }
 template<typename Ret, typename Object, typename... Args>
-auto make_execution_stage(const sstring& name, Ret (Object::*fn)(Args...)) {
+auto make_execution_stage(const std::string& name, Ret (Object::*fn)(Args...)) {
     return concrete_execution_stage<decltype(std::mem_fn(fn)), Ret, std::tuple<Object*, Args...>>(name, std::mem_fn(fn));
 }
 
 template<typename Ret, typename Object, typename... Args>
-auto make_execution_stage(const sstring& name, Ret (Object::*fn)(Args...) const) {
+auto make_execution_stage(const std::string& name, Ret (Object::*fn)(Args...) const) {
     return concrete_execution_stage<decltype(std::mem_fn(fn)), Ret, std::tuple<const Object*, Args...>>(name, std::mem_fn(fn));
 }
 
@@ -4790,28 +4779,23 @@ public:
         append_static(s, strlen(s));
     }
 
-    template <typename size_type, size_type max_size>
-    void append_static(const basic_sstring<char_type, size_type, max_size>& s) {
-        append_static(s.begin(), s.size());
-    }
-
     void append_static(const std::string_view& s) {
         append_static(s.data(), s.size());
     }
 
-    template <typename size_type, size_type max_size>
-    void append(basic_sstring<char_type, size_type, max_size> s) {
-        if (s.size()) {
-            _p = packet(std::move(_p), std::move(s).release());
-        }
-    }
+    // template <typename size_type, size_type max_size>
+    // void append(basic_sstring<char_type, size_type, max_size> s) {
+    //     if (s.size()) {
+    //         _p = packet(std::move(_p), std::move(s).release());
+    //     }
+    // }
 
-    template <typename size_type, size_type max_size, typename Callback>
-    void append(const basic_sstring<char_type, size_type, max_size>& s, Callback callback) {
-        if (s.size()) {
-            _p = packet(std::move(_p), fragment{s.begin(), s.size()}, make_deleter(std::move(callback)));
-        }
-    }
+    // template <typename size_type, size_type max_size, typename Callback>
+    // void append(const basic_sstring<char_type, size_type, max_size>& s, Callback callback) {
+    //     if (s.size()) {
+    //         _p = packet(std::move(_p), fragment{s.begin(), s.size()}, make_deleter(std::move(callback)));
+    //     }
+    // }
 
     void reserve(int n_frags) {
         _p.reserve(n_frags);
@@ -4933,9 +4917,6 @@ public:
     ~output_stream() { assert(!_in_batch); }
     future<> write(const char_type* buf, size_t n);
     future<> write(const char_type* buf);
-
-    template <typename StringChar, typename SizeType, SizeType MaxSize>
-    future<> write(const basic_sstring<StringChar, SizeType, MaxSize>& s);
     future<> write(const std::basic_string<char_type>& s);
 
     future<> write(net::packet p);
@@ -5114,14 +5095,14 @@ class network_stack_registry {
 public:
     using options = boost::program_options::variables_map;
 private:
-    static std::unordered_map<sstring,
+    static std::unordered_map<std::string,
             std::function<future<std::unique_ptr<network_stack>> (options opts)>>& _map() {
-        static std::unordered_map<sstring,
+        static std::unordered_map<std::string,
                 std::function<future<std::unique_ptr<network_stack>> (options opts)>> map;
         return map;
     }
-    static sstring& _default() {
-        static sstring def;
+    static std::string& _default() {
+        static std::string def;
         return def;
     }
 public:
@@ -5129,14 +5110,14 @@ public:
         static boost::program_options::options_description opts;
         return opts;
     }
-    static void register_stack(sstring name,
+    static void register_stack(std::string name,
             boost::program_options::options_description opts,
             std::function<future<std::unique_ptr<network_stack>> (options opts)> create,
             bool make_default = false);
-    static sstring default_stack();
-    static std::vector<sstring> list();
+    static std::string default_stack();
+    static std::vector<std::string> list();
     static future<std::unique_ptr<network_stack>> create(options opts);
-    static future<std::unique_ptr<network_stack>> create(sstring name, options opts);
+    static future<std::unique_ptr<network_stack>> create(std::string name, options opts);
 };
 
 
@@ -5144,7 +5125,7 @@ public:
 class network_stack_registrator {
 public:
     using options = boost::program_options::variables_map;
-    explicit network_stack_registrator(sstring name,
+    explicit network_stack_registrator(std::string name,
             boost::program_options::options_description opts,
             std::function<future<std::unique_ptr<network_stack>> (options opts)> factory,
             bool make_default = false);
@@ -5391,7 +5372,7 @@ enum class fs_type {
 /// A directory entry being listed.
 struct directory_entry {
     /// Name of the file in a directory entry.  Will never be "." or "..".  Only the last component is included.
-    sstring name;
+    std::string name;
     /// Type of the directory entry, if known.
     std::optional<::directory_entry_type> type;
 };
@@ -6241,7 +6222,7 @@ public:
     future<> close() override;
 };
 
-/*----------------------------------------------------------------------------------------*/
+
 struct sockaddr_in_hash {
     std::size_t operator()(const ::sockaddr_in& addr) const {
         // Create a hash from the address and port
@@ -9869,7 +9850,7 @@ promise<T...>::get_future() noexcept {
 
 
 // file_desc
-// file_desc::temporary(sstring directory) {
+// file_desc::temporary(std::string directory) {
 //     // FIXME: add O_TMPFILE support one day
 //     directory += "/XXXXXX";
 //     std::vector<char> templat(directory.c_str(), directory.c_str() + directory.size() + 1);
@@ -9954,13 +9935,6 @@ template<typename CharType>
 inline
 future<> output_stream<CharType>::write(const char_type* buf) {
     return write(buf, strlen(buf));
-}
-
-template<typename CharType>
-template<typename StringChar, typename SizeType, SizeType MaxSize>
-inline
-future<> output_stream<CharType>::write(const basic_sstring<StringChar, SizeType, MaxSize>& s) {
-    return write(reinterpret_cast<const CharType *>(s.c_str()), s.size());
 }
 
 template<typename CharType>
@@ -10547,7 +10521,7 @@ reactor::sleep() {
 
 
 
-void network_stack_registry::register_stack(sstring name,
+void network_stack_registry::register_stack(std::string name,
         boost::program_options::options_description opts,
         std::function<future<std::unique_ptr<network_stack>> (options opts)> create, bool make_default) {
     _map()[name] = std::move(create);
@@ -10557,12 +10531,12 @@ void network_stack_registry::register_stack(sstring name,
     }
 }
 
-sstring network_stack_registry::default_stack() {
+std::string network_stack_registry::default_stack() {
     return _default();
 }
 
-std::vector<sstring> network_stack_registry::list() {
-    std::vector<sstring> ret;
+std::vector<std::string> network_stack_registry::list() {
+    std::vector<std::string> ret;
     for (auto&& ns : _map()) {
         ret.push_back(ns.first);
     }
@@ -10575,14 +10549,14 @@ network_stack_registry::create(options opts) {
 }
 
 future<std::unique_ptr<network_stack>>
-network_stack_registry::create(sstring name, options opts) {
+network_stack_registry::create(std::string name, options opts) {
     if (!_map().count(name)) {
         throw std::runtime_error("network stack not registered");
     }
     return _map()[name](opts);
 }
 
-network_stack_registrator::network_stack_registrator(sstring name,
+network_stack_registrator::network_stack_registrator(std::string name,
         boost::program_options::options_description opts,
         std::function<future<std::unique_ptr<network_stack>>(options opts)> factory,
         bool make_default) {
@@ -10748,27 +10722,28 @@ public:
         }
     }
 };
+    template <transport Transport>
+    future<connected_socket, socket_address>
+    posix_server_socket_impl<Transport>::accept()
+    {
+        return _lfd.accept().then([this] (pollable_fd fd, socket_address sa) {
+            static unsigned balance = 0;
+            auto cpu = balance++ % smp::count;
 
-template <transport Transport>
-future<connected_socket, socket_address>
-posix_server_socket_impl<Transport>::accept() {
-    return _lfd.accept().then([this] (pollable_fd fd, socket_address sa) {
-        static unsigned balance = 0;
-        auto cpu = balance++ % smp::count;
+            if (cpu == engine().cpu_id()) {
+                std::unique_ptr<connected_socket_impl> csi(
+                        new posix_connected_socket_impl<Transport>(make_lw_shared(std::move(fd))));
+                return make_ready_future<connected_socket, socket_address>(
+                        connected_socket(std::move(csi)), sa);
+            } else {
+                smp::submit_to(cpu, [this, fd = std::move(fd.get_file_desc()), sa] () mutable {
+                    posix_ap_server_socket_impl<Transport>::move_connected_socket(_sa, pollable_fd(std::move(fd)), sa);
+                });
+                return accept();
+            }
+        });
+    }
 
-        if (cpu == engine().cpu_id()) {
-            std::unique_ptr<connected_socket_impl> csi(
-                    new posix_connected_socket_impl<Transport>(make_lw_shared(std::move(fd))));
-            return make_ready_future<connected_socket, socket_address>(
-                    connected_socket(std::move(csi)), sa);
-        } else {
-            smp::submit_to(cpu, [this, fd = std::move(fd.get_file_desc()), sa] () mutable {
-                posix_ap_server_socket_impl<Transport>::move_connected_socket(_sa, pollable_fd(std::move(fd)), sa);
-            });
-            return accept();
-        }
-    });
-}
 
 
 
@@ -10948,4 +10923,444 @@ future<> sleep_abortable(std::chrono::duration<Rep, Period> dur) {
         } catch(condition_variable_timed_out&) {};
     });
 }
+
+namespace net{
+template <transport Transport>
+future<connected_socket, socket_address> posix_ap_server_socket_impl<Transport>::accept() {
+    auto conni = get_conn_q().find(_sa.as_posix_sockaddr_in());
+    if (conni != get_conn_q().end()) {
+        connection c = std::move(conni->second);
+        get_conn_q().erase(conni);
+        try {
+            std::unique_ptr<connected_socket_impl> csi(
+                    new posix_connected_socket_impl<Transport>(make_lw_shared(std::move(c.fd))));
+            return make_ready_future<connected_socket, socket_address>(connected_socket(std::move(csi)), std::move(c.addr));
+        } catch (...) {
+            return make_exception_future<connected_socket, socket_address>(std::current_exception());
+        }
+    } else {
+        try {
+            auto i = get_sockets().emplace(std::piecewise_construct, std::make_tuple(_sa.as_posix_sockaddr_in()), std::make_tuple());
+            assert(i.second);
+            return i.first->second.get_future();
+        } catch (...) {
+            return make_exception_future<connected_socket, socket_address>(std::current_exception());
+        }
+    }
+}
+}
+pollable_fd
+reactor::posix_listen(socket_address sa, listen_options opts) {
+    file_desc fd = file_desc::socket(sa.u.sa.sa_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, int(opts.proto));
+    if (opts.reuse_address) {
+        fd.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1);
+    }
+    if (_reuseport)
+        fd.setsockopt(SOL_SOCKET, SO_REUSEPORT, 1);
+
+    fd.bind(sa.u.sa, sizeof(sa.u.sas));
+    fd.listen(100);
+    return pollable_fd(std::move(fd));
+}
+
+
+lw_shared_ptr<pollable_fd>
+reactor::make_pollable_fd(socket_address sa, transport proto) {
+    file_desc fd = file_desc::socket(sa.u.sa.sa_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, int(proto));
+    return make_lw_shared<pollable_fd>(pollable_fd(std::move(fd)));
+}
+
+future<>
+reactor::posix_connect(lw_shared_ptr<pollable_fd> pfd, socket_address sa, socket_address local) {
+    pfd->get_file_desc().bind(local.u.sa, sizeof(sa.u.sas));
+    pfd->get_file_desc().connect(sa.u.sa, sizeof(sa.u.sas));
+    return pfd->writeable().then([pfd]() mutable {
+        auto err = pfd->get_file_desc().getsockopt<int>(SOL_SOCKET, SO_ERROR);
+        if (err != 0) {
+            throw std::system_error(err, std::system_category());
+        }
+        return make_ready_future<>();
+    });
+}
+
+server_socket
+reactor::listen(socket_address sa, listen_options opt) {
+    return server_socket(_network_stack->listen(sa, opt));
+}
+
+future<connected_socket>
+reactor::connect(socket_address sa) {
+    return _network_stack->connect(sa);
+}
+
+future<connected_socket>
+reactor::connect(socket_address sa, socket_address local, transport proto) {
+    return _network_stack->connect(sa, local, proto);
+}
+
+
+
+
+inline
+future<pollable_fd, socket_address>
+reactor::accept(pollable_fd_state& listenfd) {
+    return readable(listenfd).then([&listenfd] () mutable {
+        socket_address sa;
+        socklen_t sl = sizeof(&sa.u.sas);
+        file_desc fd = listenfd.fd.accept(sa.u.sa, sl, SOCK_NONBLOCK | SOCK_CLOEXEC);
+        pollable_fd pfd(std::move(fd), pollable_fd::speculation(EPOLLOUT));
+        return make_ready_future<pollable_fd, socket_address>(std::move(pfd), std::move(sa));
+    });
+}
+
+inline
+future<size_t>
+reactor::read_some(pollable_fd_state& fd, void* buffer, size_t len) {
+    return readable(fd).then([this, &fd, buffer, len] () mutable {
+        auto r = fd.fd.read(buffer, len);
+        if (!r) {
+            return read_some(fd, buffer, len);
+        }
+        if (size_t(*r) == len) {
+            fd.speculate_epoll(EPOLLIN);
+        }
+        return make_ready_future<size_t>(*r);
+    });
+}
+
+inline
+future<size_t>
+reactor::read_some(pollable_fd_state& fd, const std::vector<iovec>& iov) {
+    return readable(fd).then([this, &fd, iov = iov] () mutable {
+        ::msghdr mh = {};
+        mh.msg_iov = &iov[0];
+        mh.msg_iovlen = iov.size();
+        auto r = fd.fd.recvmsg(&mh, 0);
+        if (!r) {
+            return read_some(fd, iov);
+        }
+        if (size_t(*r) == iovec_len(iov)) {
+            fd.speculate_epoll(EPOLLIN);
+        }
+        return make_ready_future<size_t>(*r);
+    });
+}
+
+inline
+future<size_t>
+reactor::write_some(pollable_fd_state& fd, const void* buffer, size_t len) {
+    return writeable(fd).then([this, &fd, buffer, len] () mutable {
+        auto r = fd.fd.send(buffer, len, MSG_NOSIGNAL);
+        if (!r) {
+            return write_some(fd, buffer, len);
+        }
+        if (size_t(*r) == len) {
+            fd.speculate_epoll(EPOLLOUT);
+        }
+        return make_ready_future<size_t>(*r);
+    });
+}
+
+inline
+future<>
+reactor::write_all_part(pollable_fd_state& fd, const void* buffer, size_t len, size_t completed) {
+    if (completed == len) {
+        return make_ready_future<>();
+    } else {
+        return write_some(fd, static_cast<const char*>(buffer) + completed, len - completed).then(
+                [&fd, buffer, len, completed, this] (size_t part) mutable {
+            return write_all_part(fd, buffer, len, completed + part);
+        });
+    }
+}
+
+inline
+future<>
+reactor::write_all(pollable_fd_state& fd, const void* buffer, size_t len) {
+    assert(len);
+    return write_all_part(fd, buffer, len, 0);
+}
+
+
+
+
+template <transport Transport>
+void
+posix_server_socket_impl<Transport>::abort_accept() {
+    _lfd.abort_reader(std::make_exception_ptr(std::system_error(ECONNABORTED, std::system_category())));
+}
+
+
+template <transport Transport>
+void
+posix_ap_server_socket_impl<Transport>::abort_accept() {
+    get_conn_q().erase(_sa.as_posix_sockaddr_in());
+    auto i = get_sockets().find(_sa.as_posix_sockaddr_in());
+    if (i != get_sockets().end()) {
+        i->second.set_exception(std::system_error(ECONNABORTED, std::system_category()));
+        get_sockets().erase(i);
+    }
+}
+
+
+
+template <transport Transport>
+future<connected_socket, socket_address>
+posix_reuseport_server_socket_impl<Transport>::accept() {
+    return _lfd.accept().then([] (pollable_fd fd, socket_address sa) {
+        std::unique_ptr<connected_socket_impl> csi(
+                new posix_connected_socket_impl<Transport>(make_lw_shared(std::move(fd))));
+        return make_ready_future<connected_socket, socket_address>(
+            connected_socket(std::move(csi)), sa);
+    });
+}
+
+
+
+
+template <transport Transport>
+void
+posix_reuseport_server_socket_impl<Transport>::abort_accept() {
+    _lfd.abort_reader(std::make_exception_ptr(std::system_error(ECONNABORTED, std::system_category())));
+}
+
+
+
+
+template <transport Transport>
+void  posix_ap_server_socket_impl<Transport>::move_connected_socket(socket_address sa, pollable_fd fd, socket_address addr) {
+    auto i = get_sockets().find(sa.as_posix_sockaddr_in());
+    if (i != get_sockets().end()) {
+        try {
+            std::unique_ptr<connected_socket_impl> csi(new posix_connected_socket_impl<Transport>(make_lw_shared(std::move(fd))));
+            i->second.set_value(connected_socket(std::move(csi)), std::move(addr));
+        } catch (...) {
+            i->second.set_exception(std::current_exception());
+        }
+        get_sockets().erase(i);
+    } else {
+        get_conn_q().emplace(std::piecewise_construct, std::make_tuple(sa.as_posix_sockaddr_in()), std::make_tuple(std::move(fd), std::move(addr)));
+    }
+}
+
+
+
+future<temporary_buffer<char>>
+posix_data_source_impl::get() {
+    return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
+        _buf.trim(size);
+        auto ret = std::move(_buf);
+        _buf = temporary_buffer<char>(_buf_size);
+        return make_ready_future<temporary_buffer<char>>(std::move(ret));
+    });
+}
+
+
+
+
+
+
+
+
+
+
+
+
+template<size_t PrefetchCnt, typename Func>
+size_t smp_message_queue::process_queue(lf_queue& q, Func process) {
+    // copy batch to local memory in order to minimize
+    // time in which cross-cpu data is accessed
+    work_item* items[queue_length + PrefetchCnt];
+    work_item* wi;
+    if (!q.pop(wi))
+        return 0;
+    // start prefecthing first item before popping the rest to overlap memory
+    // access with potential cache miss the second pop may cause
+    prefetch<2>(wi);
+    auto nr = q.pop(items);
+    std::fill(std::begin(items) + nr, std::begin(items) + nr + PrefetchCnt, nr ? items[nr - 1] : wi);
+    unsigned i = 0;
+    do {
+        prefetch_n<2>(std::begin(items) + i, std::begin(items) + i + PrefetchCnt);
+        process(wi);
+        wi = items[i++];
+    } while(i <= nr);
+    return nr + 1;
+}
+
+// Constructor that takes a callable object
+template <typename Func>
+thread::thread(Func func) : thread(thread_attributes(), std::move(func)){}
+
+// Constructor that takes thread attributes and a callable object
+template <typename Func>
+thread::thread(thread_attributes attr, Func func)
+    : _context(std::make_unique<thread_context>(std::move(attr), std::move(func))) {}
+    /*
+        因为context是使用unique_ptr管理,所以当退出作用域时，unique会析构到，在析构时自动释放管理的内存.
+    */
+
+
+template <typename... T>
+void future_state<T...>::forward_to(promise<T...>& pr) noexcept{
+    assert(_state != state::future);
+    if (_state == state::exception) {
+        pr.set_urgent_exception(std::move(_u.ex));
+        _u.ex.~exception_ptr();
+    } else {
+        pr.set_urgent_value(std::move(_u.value));
+        _u.value.~tuple();
+    }
+    _state = state::invalid;
+}
+
+template <typename Func>
+futurize_t<std::result_of_t<Func()>> smp::submit_to(unsigned t, Func&& func) {
+        using ret_type = std::result_of_t<Func()>;
+        if (t == engine().cpu_id()) {
+            try {
+                if (!is_future<ret_type>::value) {
+                    // Non-deferring function, so don't worry about func lifetime
+                    return futurize<ret_type>::apply(std::forward<Func>(func));
+                } else if (std::is_lvalue_reference<Func>::value) {
+                    // func is an lvalue, so caller worries about its lifetime
+                    return futurize<ret_type>::apply(func);
+                } else {
+                    // Deferring call on rvalue function, make sure to preserve it across call
+                    auto w = std::make_unique<std::decay_t<Func>>(std::move(func));
+                    auto ret = futurize<ret_type>::apply(*w);
+                    return ret.finally([w = std::move(w)] {});
+                }
+            } catch (...) {
+                // Consistently return a failed future rather than throwing, to simplify callers
+                return futurize<std::result_of_t<Func()>>::make_exception_future(std::current_exception());
+            }
+        } else {
+            // 这里是修复的地方
+            if (_qs != nullptr) {
+                return _qs[t][engine().cpu_id()].submit(std::forward<Func>(func));
+            } else {
+                return futurize<std::result_of_t<Func()>>::make_exception_future(std::runtime_error("smp::_qs is null"));
+            }
+        }
+}
+
+template<typename Func>
+future<> smp::invoke_on_all(Func&& func) {
+        static_assert(std::is_same<future<>, typename futurize<std::result_of_t<Func()>>::type>::value, "bad Func signature");
+        return parallel_for_each(all_cpus(), [&func] (unsigned id) {
+            return smp::submit_to(id, Func(func));
+        });
+}
+template <typename... T>
+inline
+void
+stream<T...>::close() {
+    _done.set_value();
+}
+
+template <typename... T>
+template <typename E>
+inline
+void
+stream<T...>::set_exception(E ex) {
+    _done.set_exception(ex);
+}
+
+template <typename... T>
+inline
+subscription<T...>::subscription(stream<T...>* s)
+        : _stream(s) {
+    assert(!_stream->_sub);
+    _stream->_sub = this;
+}
+
+template <typename... T>
+inline
+void
+subscription<T...>::start(std::function<future<> (T...)> next) {
+    _next = std::move(next);
+    _stream->_ready.set_value();
+}
+
+template <typename... T>
+inline
+subscription<T...>::~subscription() {
+    if (_stream) {
+        _stream->_sub = nullptr;
+    }
+}
+
+template <typename... T>
+inline
+subscription<T...>::subscription(subscription&& x)
+    : _stream(x._stream), _next(std::move(x._next)) {
+    x._stream = nullptr;
+    if (_stream) {
+        _stream->_sub = this;
+    }
+}
+
+template <typename... T>
+inline
+future<>
+subscription<T...>::done() {
+    return _stream->_done.get_future();
+}
+
+template <typename... T>
+inline
+stream<T...>::~stream() {
+    if (_sub) {
+        _sub->_stream = nullptr;
+    }
+}
+
+template <typename... T>
+inline
+subscription<T...>
+stream<T...>::listen() {
+    return subscription<T...>(this);
+}
+
+template <typename... T>
+inline
+subscription<T...>
+stream<T...>::listen(next_fn next) {
+    auto sub = subscription<T...>(this);
+    sub.start(std::move(next));
+    return sub;
+}
+
+template <typename... T>
+inline
+future<>
+stream<T...>::started() {
+    return _ready.get_future();
+}
+
+template <typename... T>
+inline
+future<>
+stream<T...>::produce(T... data) {
+    auto ret = futurize<void>::apply(_sub->_next, std::move(data)...);
+    if (ret.available() && !ret.failed()) {
+        // Native network stack depends on stream::produce() returning
+        // a ready future to push packets along without dropping.  As
+        // a temporary workaround, special case a ready, unfailed future
+        // and return it immediately, so that then_wrapped(), below,
+        // doesn't convert a ready future to an unready one.
+        return ret;
+    }
+    return ret.then_wrapped([this] (auto&& f) {
+        try {
+            f.get();
+        } catch (...) {
+            _done.set_exception(std::current_exception());
+            // FIXME: tell the producer to stop producing
+            throw;
+        }
+    });
+}
+
 #include"future_all11.tpp"

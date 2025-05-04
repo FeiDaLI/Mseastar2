@@ -1,94 +1,79 @@
 g++ -w -Wall -std=c++20 -g -Iinclude -pthread -MMD -c test/new_tests/smp_test.cc -o build/test/new_tests/smp_test.o
-In file included from include/../include/app/../future/future_all11.hh:10957,
-                 from include/../include/app/app-template.hh:27,
+In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all11.tpp:135:69: error: expected initializer before ‘<’ token
-  135 | future<connected_socket, socket_address> posix_ap_server_socket_impl<Transport>::accept() {
-      |                                                                     ^
-In file included from include/../include/app/../future/future_all11.hh:10957,
-                 from include/../include/app/app-template.hh:27,
-                 from test/new_tests/smp_test.cc:2:
-include/../include/app/../future/future_all11.tpp:160:25: error: expected initializer before ‘<’ token
-  160 | posix_server_socket_impl<Transport>::abort_accept() {
+include/../include/app/../future/future_all11.hh:11107:25: error: expected initializer before ‘<’ token
+11107 | posix_server_socket_impl<Transport>::abort_accept() {
       |                         ^
-include/../include/app/../future/future_all11.tpp:167:28: error: expected initializer before ‘<’ token
-  167 | posix_ap_server_socket_impl<Transport>::abort_accept() {
+include/../include/app/../future/future_all11.hh:11114:28: error: expected initializer before ‘<’ token
+11114 | posix_ap_server_socket_impl<Transport>::abort_accept() {
       |                            ^
-include/../include/app/../future/future_all11.tpp:180:35: error: expected initializer before ‘<’ token
-  180 | posix_reuseport_server_socket_impl<Transport>::accept() {
+include/../include/app/../future/future_all11.hh:11127:35: error: expected initializer before ‘<’ token
+11127 | posix_reuseport_server_socket_impl<Transport>::accept() {
       |                                   ^
-include/../include/app/../future/future_all11.tpp:194:35: error: expected initializer before ‘<’ token
-  194 | posix_reuseport_server_socket_impl<Transport>::abort_accept() {
+include/../include/app/../future/future_all11.hh:11141:35: error: expected initializer before ‘<’ token
+11141 | posix_reuseport_server_socket_impl<Transport>::abort_accept() {
       |                                   ^
-include/../include/app/../future/future_all11.tpp:202:34: error: expected initializer before ‘<’ token
-  202 | void  posix_ap_server_socket_impl<Transport>::move_connected_socket(socket_address sa, pollable_fd fd, socket_address addr) {
+include/../include/app/../future/future_all11.hh:11149:34: error: expected initializer before ‘<’ token
+11149 | void  posix_ap_server_socket_impl<Transport>::move_connected_socket(socket_address sa, pollable_fd fd, socket_address addr) {
       |                                  ^
-include/../include/app/../future/future_all11.tpp:220:1: error: ‘posix_data_source_impl’ has not been declared
-  220 | posix_data_source_impl::get() {
+include/../include/app/../future/future_all11.hh:11167:1: error: ‘posix_data_source_impl’ has not been declared
+11167 | posix_data_source_impl::get() {
       | ^~~~~~~~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all11.tpp: In function ‘future<temporary_buffer<char> > get()’:
-include/../include/app/../future/future_all11.tpp:221:12: error: ‘_fd’ was not declared in this scope
-  221 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
+include/../include/app/../future/future_all11.hh: In function ‘future<temporary_buffer<char> > get()’:
+include/../include/app/../future/future_all11.hh:11168:12: error: ‘_fd’ was not declared in this scope
+11168 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
       |            ^~~
-include/../include/app/../future/future_all11.tpp:221:27: error: ‘_buf’ was not declared in this scope
-  221 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
+include/../include/app/../future/future_all11.hh:11168:27: error: ‘_buf’ was not declared in this scope
+11168 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
       |                           ^~~~
-include/../include/app/../future/future_all11.tpp:221:45: error: ‘_buf_size’ was not declared in this scope
-  221 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
+include/../include/app/../future/future_all11.hh:11168:45: error: ‘_buf_size’ was not declared in this scope
+11168 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
       |                                             ^~~~~~~~~
-include/../include/app/../future/future_all11.tpp:221:62: error: invalid use of ‘this’ in non-member function
-  221 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
+include/../include/app/../future/future_all11.hh:11168:62: error: invalid use of ‘this’ in non-member function
+11168 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
       |                                                              ^~~~
-include/../include/app/../future/future_all11.tpp: In lambda function:
-include/../include/app/../future/future_all11.tpp:222:9: error: ‘_buf’ is not captured
-  222 |         _buf.trim(size);
+include/../include/app/../future/future_all11.hh: In lambda function:
+include/../include/app/../future/future_all11.hh:11169:9: error: ‘_buf’ is not captured
+11169 |         _buf.trim(size);
       |         ^~~~
-include/../include/app/../future/future_all11.tpp:221:66: note: the lambda has no capture-default
-  221 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
+include/../include/app/../future/future_all11.hh:11168:66: note: the lambda has no capture-default
+11168 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
       |                                                                  ^
-include/../include/app/../future/future_all11.tpp:221:27: note: ‘<typeprefixerror>_buf’ declared here
-  221 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
+include/../include/app/../future/future_all11.hh:11168:27: note: ‘<typeprefixerror>_buf’ declared here
+11168 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
       |                           ^~~~
-include/../include/app/../future/future_all11.tpp:223:30: error: ‘_buf’ is not captured
-  223 |         auto ret = std::move(_buf);
+include/../include/app/../future/future_all11.hh:11170:30: error: ‘_buf’ is not captured
+11170 |         auto ret = std::move(_buf);
       |                              ^~~~
-include/../include/app/../future/future_all11.tpp:221:66: note: the lambda has no capture-default
-  221 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
+include/../include/app/../future/future_all11.hh:11168:66: note: the lambda has no capture-default
+11168 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
       |                                                                  ^
-include/../include/app/../future/future_all11.tpp:221:27: note: ‘<typeprefixerror>_buf’ declared here
-  221 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
+include/../include/app/../future/future_all11.hh:11168:27: note: ‘<typeprefixerror>_buf’ declared here
+11168 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
       |                           ^~~~
-include/../include/app/../future/future_all11.tpp:224:9: error: ‘_buf’ is not captured
-  224 |         _buf = temporary_buffer<char>(_buf_size);
+include/../include/app/../future/future_all11.hh:11171:9: error: ‘_buf’ is not captured
+11171 |         _buf = temporary_buffer<char>(_buf_size);
       |         ^~~~
-include/../include/app/../future/future_all11.tpp:221:66: note: the lambda has no capture-default
-  221 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
+include/../include/app/../future/future_all11.hh:11168:66: note: the lambda has no capture-default
+11168 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
       |                                                                  ^
-include/../include/app/../future/future_all11.tpp:221:27: note: ‘<typeprefixerror>_buf’ declared here
-  221 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
+include/../include/app/../future/future_all11.hh:11168:27: note: ‘<typeprefixerror>_buf’ declared here
+11168 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
       |                           ^~~~
-include/../include/app/../future/future_all11.tpp:224:39: error: ‘_buf_size’ is not captured
-  224 |         _buf = temporary_buffer<char>(_buf_size);
+include/../include/app/../future/future_all11.hh:11171:39: error: ‘_buf_size’ is not captured
+11171 |         _buf = temporary_buffer<char>(_buf_size);
       |                                       ^~~~~~~~~
-include/../include/app/../future/future_all11.tpp:221:66: note: the lambda has no capture-default
-  221 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
+include/../include/app/../future/future_all11.hh:11168:66: note: the lambda has no capture-default
+11168 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
       |                                                                  ^
-include/../include/app/../future/future_all11.tpp:221:45: note: ‘<typeprefixerror>_buf_size’ declared here
-  221 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
+include/../include/app/../future/future_all11.hh:11168:45: note: ‘<typeprefixerror>_buf_size’ declared here
+11168 |     return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
       |                                             ^~~~~~~~~
-include/../include/app/../future/future_all11.tpp: At global scope:
-include/../include/app/../future/future_all11.tpp:229:10: error: ‘posix_data_source_impl’ has not been declared
-  229 | future<> posix_data_source_impl::close() {
-      |          ^~~~~~~~~~~~~~~~~~~~~~
-include/../include/app/../future/future_all11.tpp: In function ‘future<> close()’:
-include/../include/app/../future/future_all11.tpp:230:5: error: ‘_fd’ was not declared in this scope
-  230 |     _fd->shutdown(SHUT_RD);
-      |     ^~~
 In file included from include/../include/app/app-template.hh:27,
                  from test/new_tests/smp_test.cc:2:
 include/../include/app/../future/future_all11.hh: At global scope:
-include/../include/app/../future/future_all11.hh:6122:36: error: ‘static std::unique_ptr<pollfn> reactor::make_pollfn(Func&&) [with Func = reactor::poller::~poller()::<lambda()>]’, declared using local type ‘reactor::poller::~poller()::<lambda()>’, is used but never defined [-fpermissive]
- 6122 |     static std::unique_ptr<pollfn> make_pollfn(Func&& func);
+include/../include/app/../future/future_all11.hh:6108:36: error: ‘static std::unique_ptr<pollfn> reactor::make_pollfn(Func&&) [with Func = reactor::poller::~poller()::<lambda()>]’, declared using local type ‘reactor::poller::~poller()::<lambda()>’, is used but never defined [-fpermissive]
+ 6108 |     static std::unique_ptr<pollfn> make_pollfn(Func&& func);
       |                                    ^~~~~~~~~~~
 makefile:83: recipe for target 'build/test/new_tests/smp_test.o' failed
 make: *** [build/test/new_tests/smp_test.o] Error 1
