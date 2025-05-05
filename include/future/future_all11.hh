@@ -3553,7 +3553,7 @@ class packet final {
         pseudo_vector fragments() { return { _frags, _nr_frags }; }
 
         static std::unique_ptr<impl> allocate(size_t nr_frags) {
-            nr_frags = std::max(nr_frags, default_nr_frags);
+            nr_frags = std::max(nr_frags, default_nr_frags);//4
             return std::unique_ptr<impl>(new (nr_frags) impl(nr_frags));
         }
 
@@ -4763,7 +4763,6 @@ public:
     scattered_message() {}
     scattered_message(scattered_message&&) = default;
     scattered_message(const scattered_message&) = delete;
-
     void append_static(const char_type* buf, size_t size) {
         if (size) {
             _p = packet(std::move(_p), fragment{(char_type*)buf, size}, deleter());
